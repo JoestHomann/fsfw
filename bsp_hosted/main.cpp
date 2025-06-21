@@ -1,4 +1,3 @@
-//Test commit
 #include <bsp_hosted/core/InitMission.h>
 #include <bsp_hosted/core/ObjectFactory.h>
 #include <fsfw/objectmanager/ObjectManager.h>
@@ -14,7 +13,7 @@
 #ifdef PLATFORM_WIN
 static const char* COMPILE_PRINTOUT = "Windows";
 #elif defined(PLATFORM_UNIX)
-static const char* COMPILE_PRINTOUT = "Linux";
+static const char* COMPILE_PRINTOUT = "Linux (Wer das ließt, ist doof)";
 #else
 static const char* COMPILE_PRINTOUT = "unknown OS";
 #endif

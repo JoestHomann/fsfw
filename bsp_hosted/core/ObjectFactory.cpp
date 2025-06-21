@@ -11,6 +11,11 @@
 #include "fsfw/tmtcservices/CommandingServiceBase.h"
 #include "fsfw_hal/host/HostFilesystem.h"
 
+// JH
+#include "fsfw/src/fsfw/devicehandlers/ReactionWheelsHandler.h"
+#include "fsfw/tasks/TaskFactory.h"
+// JH
+
 #if OBSW_USE_TCP_SERVER == 0
 #include <fsfw/osal/common/UdpTcPollingTask.h>
 #include <fsfw/osal/common/UdpTmTcBridge.h>
@@ -76,4 +81,25 @@ void ObjectFactory::produce(void* args) {
   periodicEvent = true;
 #endif
   new FsfwTestTask(objects::TEST_TASK, periodicEvent);
+
+  // JH
+  // 1. Create the ReactionWheelsHandler object
+  auto* rwHandler =
+      new ReactionWheelsHandler(objects::RW_HANDLER,  // Verwende die Object-ID, passe ggf. an!
+                               0,       // comIF (dummy/0, falls keine echte Kommunikation)
+                               nullptr  // comCookie (nullptr für Simulationsstart)
+      );
+
+  // 2. Create a periodic task for the ReactionWheelHandler
+  PeriodicTaskIF* rwTask = TaskFactory::instance()->createPeriodicTask(
+      "RW_HANDLER_TASK",  // Task name
+      40,                 // Priority (z.B. 40, passe an dein System an)
+      4096,               // Stack size (z.B. 4096)
+      0.2,                // Period in seconds (z.B. 0.2 = 200ms = 5 Hz)
+      nullptr             // Deadline missed callback (optional)
+  );
+
+  // 3. Add the handler to the task so it gets executed periodically
+  rwTask->addComponent(rwHandler);
+  // JH
 }
