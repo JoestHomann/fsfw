@@ -1,0 +1,2 @@
+PUS_APID = 0xEF
+TM_SP_IDS = ((0x08 << 8) | PUS_APID,)
