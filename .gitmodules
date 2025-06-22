@@ -4,9 +4,9 @@
 [submodule "generators/fsfwgen"]
 	path = generators/fsfwgen
 	url = https://egit.irs.uni-stuttgart.de/fsfw/fsfw-gen.git
-[submodule "fsfw"]
-	path = fsfw
-	url = https://egit.irs.uni-stuttgart.de/fsfw/fsfw.git
+#[submodule "fsfw"]
+#	path = fsfw
+#	url = https://egit.irs.uni-stuttgart.de/fsfw/fsfw.git
 [submodule "tmtc/common_tmtc"]
 	path = tmtc/common_tmtc
 	url = https://egit.irs.uni-stuttgart.de/fsfw/fsfw-example-tmtc-common.git
