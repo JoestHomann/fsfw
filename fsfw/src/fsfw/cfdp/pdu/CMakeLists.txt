@@ -1,0 +1,29 @@
+target_sources(
+  ${LIB_FSFW_NAME}
+  PRIVATE PduConfig.cpp
+          HeaderCreator.cpp
+          HeaderReader.cpp
+          FileDirectiveReader.cpp
+          FileDirectiveCreator.cpp
+          AckInfo.cpp
+          AckPduCreator.cpp
+          AckPduReader.cpp
+          EofInfo.cpp
+          EofPduCreator.cpp
+          EofPduReader.cpp
+          NakInfo.cpp
+          NakPduCreator.cpp
+          NakPduReader.cpp
+          FinishedInfo.cpp
+          FinishedPduCreator.cpp
+          FinishedPduReader.cpp
+          MetadataInfo.cpp
+          MetadataPduCreator.cpp
+          MetadataPduReader.cpp
+          KeepAlivePduCreator.cpp
+          KeepAlivePduReader.cpp
+          PromptPduCreator.cpp
+          PromptPduReader.cpp
+          FileDataCreator.cpp
+          FileDataReader.cpp
+          FileDataInfo.cpp)

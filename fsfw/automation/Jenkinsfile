@@ -1,0 +1,85 @@
+pipeline {
+    environment {
+        BUILDDIR = 'cmake-build-tests'
+        DOCDDIR = 'cmake-build-documentation'
+    }
+    agent {
+        docker { 
+            image 'fsfw-ci:d6'
+            args '--network host'
+        }
+    }
+    stages {
+        stage('Clean') {
+            steps {
+                sh 'rm -rf $BUILDDIR'
+            }
+        }
+        stage('Configure') {
+            steps {
+                dir(BUILDDIR) {
+                    sh 'cmake -DFSFW_OSAL=host -DFSFW_BUILD_TESTS=ON -DFSFW_CICD_BUILD=ON ..'
+                }
+            }
+        }
+        stage('Build') {
+            steps {
+                dir(BUILDDIR) {
+                    sh 'cmake --build . -j4'
+                }
+            }
+        }
+        stage('Unittests') {
+            steps {
+                dir(BUILDDIR) {
+                    sh 'cmake --build . -- fsfw-tests_coverage -j4'
+                }
+            }
+        }
+        stage('Valgrind') {
+            steps {
+                dir(BUILDDIR) {
+                    sh 'valgrind --leak-check=full --error-exitcode=1 ./fsfw-tests'
+                }
+            }
+        }
+        stage('Documentation') {
+            when {
+                branch 'development'
+            }
+            steps {
+                dir(DOCDDIR) {
+                    sh 'cmake -DFSFW_BUILD_DOCS=ON -DFSFW_OSAL=host ..'
+                    sh 'make Sphinx'
+                    sshagent(credentials: ['documentation-buildfix']) {
+                        sh 'rsync -r --delete docs/sphinx/* buildfix@documentation.irs.uni-stuttgart.de:/fsfw/development'
+                    }
+                }
+                dir(BUILDDIR) {
+                    sshagent(credentials: ['documentation-buildfix']) {
+                        sh 'rsync -r --delete fsfw-tests_coverage/* buildfix@documentation.irs.uni-stuttgart.de:/fsfw/coverage/development'
+                    }
+                }
+            }
+        }
+        stage('Master Documentation') {
+            when {
+                branch 'master'
+            }
+            steps {
+                dir(DOCDDIR) {
+                    sh 'cmake -DFSFW_BUILD_DOCS=ON -DFSFW_OSAL=host ..'
+                    sh 'make Sphinx'
+                    sshagent(credentials: ['documentation-buildfix']) {
+                        sh 'rsync -r --delete docs/sphinx/* buildfix@documentation.irs.uni-stuttgart.de:/fsfw/master'
+                    }
+                }
+                dir(BUILDDIR) {
+                    sshagent(credentials: ['documentation-buildfix']) {
+                        sh 'rsync -r --delete fsfw-tests_coverage/* buildfix@documentation.irs.uni-stuttgart.de:/fsfw/coverage/master'
+                    }
+                }
+            }
+        }
+    }
+}
