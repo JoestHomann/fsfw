@@ -101,5 +101,6 @@ void ObjectFactory::produce(void* args) {
 
   // 3. Add the handler to the task so it gets executed periodically
   rwTask->addComponent(rwHandler);
+
   // JH
 }
