@@ -1,6 +1,6 @@
-[submodule "fsfw_common"]
-	path = example_common
-	url = https://egit.irs.uni-stuttgart.de/fsfw/fsfw-example-common.git
+#[submodule "fsfw_common"]
+#	path = example_common
+#	url = https://egit.irs.uni-stuttgart.de/fsfw/fsfw-example-common.git
 [submodule "generators/fsfwgen"]
 	path = generators/fsfwgen
 	url = https://egit.irs.uni-stuttgart.de/fsfw/fsfw-gen.git
