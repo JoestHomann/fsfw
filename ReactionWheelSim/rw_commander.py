@@ -30,22 +30,30 @@ def send_command(ser, cmd_id, value=0):
     ser.write(packet)
 
 def read_reply(ser):
-    if ser.in_waiting >= 6:
-        reply = ser.read(6)
-        reply = list(reply)
+    timeout = time.time() + 2.0
+    while ser.in_waiting < 8 and time.time() < timeout:
+        time.sleep(0.01)
+
+    while ser.in_waiting >= 8:
+        reply = list(ser.read(8))
         print(f"← Received: {[hex(b) for b in reply]}")
         if reply[0] != START_BYTE_REPLY:
             print("Invalid start byte")
-            return
-        if crc8(reply[:5]) != reply[5]:
+            continue
+        if crc8(reply[:7]) != reply[7]:
             print("CRC mismatch!")
-            return
+            continue
         if reply[1] == RESP_STATUS:
             speed = (reply[2] << 8) | reply[3]
-            running = reply[4]
-            print(f"Status: speed = {speed}, running = {bool(running)}")
+            torque = (reply[4] << 8) | reply[5]
+            if torque & 0x8000:
+                torque -= 0x10000
+            running = reply[6]
+            print(f"Status: speed = {speed} RPM, torque = {torque} mNm, running = {bool(running)}")
+            break
         else:
             print("Unknown response ID")
+
 
 def main():
     port = input("Enter serial port (e.g., COM4 or /dev/ttyUSB0): ")

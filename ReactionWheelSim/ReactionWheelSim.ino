@@ -1,5 +1,4 @@
-// === Reaction Wheel Simulator for FSFW Communication ===
-// Features: CRC8, binary packet parser, LED blink for RPM visualization
+// === Reaction Wheel Simulator mit realer Dynamik ===
 
 const byte START_BYTE_CMD   = 0xAA;
 const byte START_BYTE_REPLY = 0xAB;
@@ -12,88 +11,130 @@ const byte RESP_STATUS      = 0x10;
 
 const int LED_PIN = LED_BUILTIN;
 
-int speed = 0;            // Abstract RPM
-bool running = false;
+// Physikalische Parameter
+const float J_rw = 0.001f;         // [kg m^2] Trägheit des Reaktionsrads
+const float J_sc = 0.5f;           // [kg m^2] Trägheit des Raumfahrzeugs (virtuell)
+const float alpha_max = 5.0f;      // [rad/s^2] maximale Beschleunigung
+const float dt = 0.01f;            // [s] Simulationszeit-Schritt (10ms)
+
+// Zustände
+float omega_rw = 0.0f;             // [rad/s] aktuelle Raddrehzahl
+float omega_rw_target = 0.0f;      // [rad/s] Zielgeschwindigkeit
+float alpha_rw = 0.0f;             // [rad/s^2] aktuelle Beschleunigung
+bool errorFlag = false;            // Fehlerstatus (z. B. ungültiges Paket)
+
+unsigned long lastUpdate = 0;
 
 void setup() {
   Serial.begin(9600);
-  while (!Serial);  // Wait until Serial is ready
+  while (!Serial);
   pinMode(LED_PIN, OUTPUT);
+  pinMode(LED_PWR, OUTPUT);
   digitalWrite(LED_PIN, LOW);
-  //Serial.println("Reaction Wheel ready (binary mode)");
+  digitalWrite(LED_PWR, LOW);
 }
 
 void loop() {
   handleSerialPackets();
-  simulateReactionWheel();
+  updateWheelDynamics();
+  visualizeSpeed();
+  updateErrorLED();
 }
 
-// === Handle incoming 5-byte binary commands ===
 void handleSerialPackets() {
   if (Serial.available() >= 5) {
     byte packet[5];
     Serial.readBytes(packet, 5);
 
-    if (packet[0] != START_BYTE_CMD) return;
-    if (crc8(packet, 4) != packet[4]) return; // Invalid CRC
+    if (packet[0] != START_BYTE_CMD) {
+      errorFlag = true;
+      return;
+    }
+    if (crc8(packet, 4) != packet[4]) {
+      errorFlag = true;
+      return;
+    }
 
+    errorFlag = false; // Paket korrekt, Fehlerstatus zurücksetzen
     byte cmd = packet[1];
     uint16_t value = (packet[2] << 8) | packet[3];
 
     switch (cmd) {
       case CMD_SET_SPEED:
-        speed = constrain(value, 0, 1000);  // Cap to avoid division by 0
-        running = true;
+        omega_rw_target = value * 2 * PI / 60.0f; // [U/min] zu [rad/s]
         break;
-
       case CMD_STOP:
-        speed = 0;
-        running = false;
+        omega_rw_target = 0.0f;
         break;
-
       case CMD_STATUS:
         sendStatusReply();
+        break;
+      default:
+        errorFlag = true; // unbekannter Befehl
         break;
     }
   }
 }
 
-// === Simulated reaction wheel blinking ===
-void simulateReactionWheel() {
-  if (running && speed > 0) {
-    digitalWrite(LED_PIN, HIGH);
-    delay(5000 / speed);  // Blink rate ~proportional to RPM
-    digitalWrite(LED_PIN, LOW);
-    delay(5000 / speed);
-  } else {
-    digitalWrite(LED_PIN, LOW);
+void updateWheelDynamics() {
+  unsigned long now = millis();
+  if (now - lastUpdate < 10) return;
+  lastUpdate = now;
+
+  float error = omega_rw_target - omega_rw;
+  float desired_alpha = constrain(error / dt, -alpha_max, alpha_max);
+
+  alpha_rw = desired_alpha;
+  omega_rw += alpha_rw * dt;
+}
+
+void visualizeSpeed() {
+  float freq = abs(omega_rw) / (2 * PI); // Hz
+  float delay_ms = (freq > 0.5f) ? 500.0f / freq : 1000.0f;
+
+  static unsigned long lastBlink = 0;
+  static bool state = false;
+
+  if (millis() - lastBlink >= delay_ms) {
+    state = !state;
+    digitalWrite(LED_PIN, state);
+    lastBlink = millis();
   }
 }
 
-// === Send a 6-byte reply with status and speed ===
-void sendStatusReply() {
-  byte reply[6];
-  reply[0] = START_BYTE_REPLY;
-  reply[1] = RESP_STATUS;
-  reply[2] = (speed >> 8) & 0xFF;
-  reply[3] = speed & 0xFF;
-  reply[4] = running ? 1 : 0;
-  reply[5] = crc8(reply, 5);
-
-  Serial.write(reply, 6);
+void updateErrorLED() {
+  if (errorFlag) {
+    digitalWrite(LED_PWR, HIGH); // Fehleranzeige EIN
+  } else {
+    digitalWrite(LED_PWR, LOW);  // Kein Fehler
+  }
 }
 
-// === CRC8 using x^8 + x^2 + x + 1 polynomial (0x07) ===
+void sendStatusReply() {
+  byte reply[8];
+  reply[0] = START_BYTE_REPLY;
+  reply[1] = RESP_STATUS;
+  int16_t speed_rpm = omega_rw * 60.0f / (2 * PI); // rad/s → U/min
+  int16_t torque_mNm = J_rw * alpha_rw * 1000.0f;   // Nm → mNm
+  reply[2] = (speed_rpm >> 8) & 0xFF;
+  reply[3] = speed_rpm & 0xFF;
+  reply[4] = (torque_mNm >> 8) & 0xFF;
+  reply[5] = torque_mNm & 0xFF;
+  reply[6] = (omega_rw_target != 0.0f) ? 1 : 0;
+  reply[7] = crc8(reply, 7);
+
+  Serial.write(reply, 8);
+}
+
 byte crc8(const byte* data, byte len) {
   byte crc = 0x00;
   for (byte i = 0; i < len; i++) {
     crc ^= data[i];
     for (byte j = 0; j < 8; j++) {
-      if (crc & 0x80) {
+      if (crc & 0x80)
         crc = (crc << 1) ^ 0x07;
-      } else {
+      else
         crc <<= 1;
-      }
     }
   }
   return crc;
