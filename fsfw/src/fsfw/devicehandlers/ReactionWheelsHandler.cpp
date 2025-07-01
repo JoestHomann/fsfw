@@ -87,7 +87,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
         setTargetSpeed(newSpeed);
         sif::info << "RWHandler: SET_SPEED received, new target=" << newSpeed << std::endl;
       } else {
-        sif::warning << "RWHandler: SET_SPEED command – not enough data!" << std::endl;
+        sif::warning << "RWHandler: SET_SPEED command - not enough data!" << std::endl;
       }
       break;
     case CMD_RESET:
@@ -96,11 +96,11 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       speedIntegral = 0.0f;
       errorFlag = false;
       setMode(MODE_ON);
-      sif::info << "RWHandler: RESET command received – handler reset." << std::endl;
+      sif::info << "RWHandler: RESET command received - handler reset." << std::endl;
       break;
     case CMD_STOP:
       targetSpeed = 0.0f;
-      sif::info << "RWHandler: STOP command received – target speed set to zero." << std::endl;
+      sif::info << "RWHandler: STOP command received - target speed set to zero." << std::endl;
       break;
     default:
       sif::warning << "RWHandler: Unknown command received: " << deviceCommand << std::endl;
@@ -126,7 +126,7 @@ void ReactionWheelsHandler::fillCommandAndReplyMap() {
   insertInReplyMap(REPLY_ACK, 2);
   insertInReplyMap(REPLY_STATUS, 2);
 
-  sif::info << "RWHandler: fillCommandAndReplyMap – registered SET_SPEED, RESET, STOP."
+  sif::info << "RWHandler: fillCommandAndReplyMap - registered SET_SPEED, RESET, STOP."
             << std::endl;
 }
 

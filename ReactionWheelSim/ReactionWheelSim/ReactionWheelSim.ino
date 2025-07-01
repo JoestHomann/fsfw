@@ -97,11 +97,11 @@ void handleSerialPackets() {
 
     errorFlag = false; // package correct, reset error flag
     byte cmd = packet[1];
-    uint16_t value = (packet[2] << 8) | packet[3];
+    int16_t value = (int16_t)((int16_t)packet[2] << 8 | packet[3]);
 
     switch (cmd) {
       case CMD_SET_SPEED:
-        omega_rw_target = value * 2 * PI / 60.0f; // [U/min] conversion to [rad/s]
+        omega_rw_target = (float)value * 2.0f * PI / 60.0f; // [U/min] conversion to [rad/s]
         break;
       case CMD_STOP:
         omega_rw_target = 0.0f;
