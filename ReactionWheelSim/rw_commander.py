@@ -23,6 +23,9 @@ def crc8(data):
     return crc
 
 def send_command(ser, cmd_id, value=0):
+    if value < 0:
+        value = (1 << 16) + value  # z.B. -10 → 65526
+
     payload = [START_BYTE_CMD, cmd_id, (value >> 8) & 0xFF, value & 0xFF]
     crc = crc8(payload)
     packet = bytearray(payload + [crc])
@@ -45,6 +48,8 @@ def read_reply(ser):
             continue
         if reply[1] == RESP_STATUS:
             speed = (reply[2] << 8) | reply[3]
+            if speed & 0x8000:
+                speed -= 0x10000
             torque = (reply[4] << 8) | reply[5]
             if torque & 0x8000:
                 torque -= 0x10000
