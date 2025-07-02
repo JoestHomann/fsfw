@@ -12,7 +12,9 @@
 #include "fsfw_hal/host/HostFilesystem.h"
 
 // JH
-#include "fsfw/src/fsfw/devicehandlers/ReactionWheelsHandler.h"
+#include "fsfw/src/fsfw/devicehandlers/ReactionWheelHandler.h"
+#include "fsfw/src/fsfw_hal/linux/serial/SerialComIF.h"
+#include "fsfw/src/fsfw_hal/linux/serial/SerialCookie.h"
 #include "fsfw/tasks/TaskFactory.h"
 // JH
 
@@ -83,12 +85,15 @@ void ObjectFactory::produce(void* args) {
   new FsfwTestTask(objects::TEST_TASK, periodicEvent);
 
   // JH
+  // SerialComIF und SerialCookie für Reaction Wheel
+  auto* serialComIf = new SerialComIF();
+  ObjectManager::instance()->insert(objects::RW_SERIAL_COM_IF, serialComIf);
+
+  auto* rwSerialCookie = new SerialCookie("/dev/ttyACM0", 9600);
+
   // 1. Create the ReactionWheelsHandler object
   auto* rwHandler =
-      new ReactionWheelsHandler(objects::RW_HANDLER,  // Verwende die Object-ID, passe ggf. an!
-                               0,       // comIF (dummy/0, falls keine echte Kommunikation)
-                               nullptr  // comCookie (nullptr für Simulationsstart)
-      );
+      new ReactionWheelHandler(objects::RW_HANDLER, objects::RW_SERIAL_COM_IF, rwSerialCookie);
 
   // 2. Create a periodic task for the ReactionWheelHandler
   PeriodicTaskIF* rwTask = TaskFactory::instance()->createPeriodicTask(

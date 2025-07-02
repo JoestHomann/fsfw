@@ -8,4 +8,4 @@ target_sources(
           DeviceHandlerMessage.cpp
           DeviceTmReportingWrapper.cpp
           HealthDevice.cpp
-          ReactionWheelsHandler.cpp)
+          ReactionWheelHandler.cpp)

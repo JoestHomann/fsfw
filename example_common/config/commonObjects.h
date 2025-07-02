@@ -23,6 +23,7 @@ enum commonObjects : object_id_t {
 
   /* 0x49 ('I') for Communication Interfaces */
   TEST_ECHO_COM_IF = 0x4900AFFE,
+  RW_SERIAL_COM_IF = 0x4901AFFE, // JH
 
   /* 0x63 ('C') for core objects */
   CCSDS_DISTRIBUTOR = 0x63000000,

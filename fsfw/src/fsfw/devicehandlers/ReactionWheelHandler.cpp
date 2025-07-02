@@ -1,24 +1,24 @@
-#include "ReactionWheelsHandler.h"
+#include "ReactionWheelHandler.h"
 
 #include "fsfw/returnvalues/returnvalue.h"
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"  // For sif::info
 
-ReactionWheelsHandler::ReactionWheelsHandler(object_id_t objectId, object_id_t comIF,
-                                             CookieIF* comCookie)
+ReactionWheelHandler::ReactionWheelHandler(object_id_t objectId, object_id_t comIF,
+                                           CookieIF* comCookie)
     : DeviceHandlerBase(objectId, comIF, comCookie) {}
 
-ReactionWheelsHandler::~ReactionWheelsHandler() {}
+ReactionWheelHandler::~ReactionWheelHandler() {}
 
-void ReactionWheelsHandler::doStartUp() {
+void ReactionWheelHandler::doStartUp() {
   // Called during the transition to ON mode.
   // You could send initialization or power-up commands here.
 
-  sif::info << "ReactionWheelsHandler: Entering doStartUp(), switching to MODE_ON"
+  sif::info << "ReactionWheelHandler: Entering doStartUp(), switching to MODE_ON"
             << std::endl;  // Output current mode for debugging
   setMode(MODE_ON);
 }
 
-void ReactionWheelsHandler::doShutDown() {
+void ReactionWheelHandler::doShutDown() {
   sif::info << "RWHandler: doShutDown(), switching to MODE_OFF" << std::endl;
   currentSpeed = 0.0f;
   speedIntegral = 0.0f;
@@ -26,7 +26,7 @@ void ReactionWheelsHandler::doShutDown() {
   setMode(MODE_OFF);
 }
 
-ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t* id) {
+ReturnValue_t ReactionWheelHandler::buildNormalDeviceCommand(DeviceCommandId_t* id) {
   // Call error check first
   checkForErrors();
   if (mode == MODE_NORMAL && !errorFlag) {
@@ -54,11 +54,27 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
 
     sif::info << "RWHandler: PI-Regelung, target=" << targetSpeed << " current=" << currentSpeed
               << " control=" << controlSignal << std::endl;
+
+    // Prepare the command buffer to send the target speed to the device
+    uint8_t* buffer = cmdBuffer;  
+    buffer[0] = 0xAA;             // Startbyte
+    buffer[1] = 0x01;             // CMD_SET_SPEED
+    uint16_t rpm = static_cast<uint16_t>(targetSpeed);
+    buffer[2] = (rpm >> 8) & 0xFF;
+    buffer[3] = rpm & 0xFF;
+    buffer[4] = CRC8(buffer, 4);  // CRC-Function
+
+    rawPacket = buffer;
+    rawPacketLen = 5;
+    *id = CMD_SET_SPEED;  // Command-Id setzen, falls gebraucht
+
+    sif::info << "RWHandler: Sende Paket an Arduino, target=" << targetSpeed << std::endl;
+    return returnvalue::OK;
   }
   return returnvalue::OK;
 }
 
-ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandId_t* id) {
+ReturnValue_t ReactionWheelHandler::buildTransitionDeviceCommand(DeviceCommandId_t* id) {
   sif::info << "RWHandler: buildTransitionDeviceCommand called." << std::endl;
   // Handle transitions between modes.
   if (mode == MODE_ON) {
@@ -76,9 +92,9 @@ ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandI
   return returnvalue::OK;
 }
 
-ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t deviceCommand,
-                                                             const uint8_t* commandData,
-                                                             size_t commandDataLen) {
+ReturnValue_t ReactionWheelHandler::buildCommandFromCommand(DeviceCommandId_t deviceCommand,
+                                                            const uint8_t* commandData,
+                                                            size_t commandDataLen) {
   switch (deviceCommand) {
     case CMD_SET_SPEED:
       if (commandDataLen >= sizeof(float)) {
@@ -109,7 +125,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
   return returnvalue::OK;
 }
 
-void ReactionWheelsHandler::fillCommandAndReplyMap() {
+void ReactionWheelHandler::fillCommandAndReplyMap() {
   // Register the SET_SPEED command
   insertInCommandAndReplyMap(
       CMD_SET_SPEED,  // Command ID
@@ -130,26 +146,33 @@ void ReactionWheelsHandler::fillCommandAndReplyMap() {
             << std::endl;
 }
 
-ReturnValue_t ReactionWheelsHandler::scanForReply(const uint8_t* start, size_t len,
-                                                  DeviceCommandId_t* foundId, size_t* foundLen) {
-  // Simulate scanning for a reply.
-  // In a real implementation, you would parse the incoming data to find a valid reply.
-  sif::info << "RWHandler: scanForReply called (no real data in dummy version)." << std::endl;
-  *foundId = 0;   // Dummy-ID
-  *foundLen = 0;  // Dummy-Length
-  return returnvalue::OK;
+ReturnValue_t ReactionWheelHandler::scanForReply(const uint8_t* start, size_t len, DeviceCommandId_t* foundId, size_t* foundLen) {
+    // Minimum: Startbyte + Typ + Daten + CRC = 8
+    if (len < 8) return returnvalue::FAILED;
+    if (start[0] != 0xAB) return returnvalue::FAILED;
+    if (CRC8(start, 7) != start[7]) return returnvalue::FAILED;
+    if (start[1] == 0x10) { // STATUS REPLY
+        *foundId = REPLY_STATUS;
+        *foundLen = 8;
+        return returnvalue::OK;
+    }
+    return returnvalue::FAILED;
 }
 
-ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
-                                                          const uint8_t* packet) {
-  // Simulate interpreting a device reply.
-  // In a real implementation, you would parse the packet and update internal state.
-  sif::info << "RWHandler: interpretDeviceReply called for id=" << id << std::endl;
-
-  return returnvalue::OK;
+ReturnValue_t ReactionWheelHandler::interpretDeviceReply(DeviceCommandId_t id, const uint8_t* packet) {
+    if (id == REPLY_STATUS) {
+        int16_t speed_rpm = (packet[2] << 8) | packet[3];
+        int16_t torque = (packet[4] << 8) | packet[5];
+        bool running = packet[6];
+        this->currentSpeed = speed_rpm;
+        
+        sif::info << "RWHandler: " << speed_rpm << "rpm." << std::endl;
+        return returnvalue::OK;
+    }
+    return returnvalue::FAILED;
 }
 
-uint32_t ReactionWheelsHandler::getTransitionDelayMs(Mode_t modeFrom, Mode_t modeTo) {
+uint32_t ReactionWheelHandler::getTransitionDelayMs(Mode_t modeFrom, Mode_t modeTo) {
   // Set the delay for mode transitions.
   if (modeFrom == MODE_OFF && modeTo == MODE_ON) {
     return 500;  // 500 ms
@@ -157,22 +180,21 @@ uint32_t ReactionWheelsHandler::getTransitionDelayMs(Mode_t modeFrom, Mode_t mod
   return 0;
 }
 
-ReturnValue_t ReactionWheelsHandler::initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
-                                                             LocalDataPoolManager& poolManager) {
+ReturnValue_t ReactionWheelHandler::initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
+                                                            LocalDataPoolManager& poolManager) {
   sif::info << "RWHandler: initializeLocalDataPool called (no datapool variables yet)."
             << std::endl;
   return returnvalue::OK;
 }
 
 // Setters and getters for target and current speed
-void ReactionWheelsHandler::setTargetSpeed(float speed) { targetSpeed = speed; }
-float ReactionWheelsHandler::getTargetSpeed() const { return targetSpeed; }
-void ReactionWheelsHandler::setCurrentSpeed(float speed) { currentSpeed = speed; }
-float ReactionWheelsHandler::getCurrentSpeed() const { return currentSpeed; }
-
+void ReactionWheelHandler::setTargetSpeed(float speed) { targetSpeed = speed; }
+float ReactionWheelHandler::getTargetSpeed() const { return targetSpeed; }
+void ReactionWheelHandler::setCurrentSpeed(float speed) { currentSpeed = speed; }
+float ReactionWheelHandler::getCurrentSpeed() const { return currentSpeed; }
 
 // Error checking function
-void ReactionWheelsHandler::checkForErrors() {
+void ReactionWheelHandler::checkForErrors() {
   if (currentSpeed > maxSpeed + 1e-3f) {  // small tolerance to avoid floating point inaccuracies
     errorFlag = true;
     currentSpeed = maxSpeed;
@@ -187,4 +209,19 @@ void ReactionWheelsHandler::checkForErrors() {
   } else {
     errorFlag = false;
   }
+}
+
+
+uint8_t ReactionWheelHandler::CRC8(const uint8_t* data, size_t len) {
+    uint8_t crc = 0x00;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (uint8_t j = 0; j < 8; j++) {
+            if (crc & 0x80)
+                crc = (crc << 1) ^ 0x07;
+            else
+                crc <<= 1;
+        }
+    }
+    return crc;
 }

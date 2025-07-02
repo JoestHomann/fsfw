@@ -4,10 +4,13 @@
 
 #include "fsfw/devicehandlers/DeviceHandlerBase.h"
 
-class ReactionWheelsHandler : public DeviceHandlerBase {
+class ReactionWheelHandler : public DeviceHandlerBase {
  public:
-  ReactionWheelsHandler(object_id_t objectId, object_id_t comIF, CookieIF* comCookie);
-  virtual ~ReactionWheelsHandler();
+  ReactionWheelHandler(object_id_t objectId, object_id_t comIF, CookieIF* comCookie);
+  virtual ~ReactionWheelHandler();
+
+  // CRC8 calculation function
+  static uint8_t CRC8(const uint8_t* data, size_t len);
 
   // Setters and getters for target and current speed
   void setTargetSpeed(float speed);
@@ -51,6 +54,8 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   float ki = 0.1f;         // Integral gain
   float dt = 0.2f;         // Task period [s], anpassen je nach Scheduler!
   float maxAccel = 50.0f;  // [RPM/s], optional Begrenzung für realistischeren Ramp-Up
+
+  uint8_t cmdBuffer[8] = {0}; // Buffer for command data
 
   // DeviceCommand IDs für ReactionWheel-Kommandos
   static constexpr DeviceCommandId_t CMD_SET_SPEED = 0x01; // Dummy values                  // Anm.: Ggfs. als public static constexpr definieren
