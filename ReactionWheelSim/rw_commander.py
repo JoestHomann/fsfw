@@ -24,12 +24,12 @@ def crc8(data):
 
 def send_command(ser, cmd_id, value=0):
     if value < 0:
-        value = (1 << 16) + value  # z.B. -10 → 65526
+        value = (1 << 16) + value  # e.g. -10 → 65526
 
     payload = [START_BYTE_CMD, cmd_id, (value >> 8) & 0xFF, value & 0xFF]
     crc = crc8(payload)
     packet = bytearray(payload + [crc])
-    print(f"→ Sending: {[hex(b) for b in packet]}")
+    print(f"-> Sending: {[hex(b) for b in packet]}")
     ser.write(packet)
 
 def read_reply(ser):
@@ -39,7 +39,7 @@ def read_reply(ser):
 
     while ser.in_waiting >= 8:
         reply = list(ser.read(8))
-        print(f"← Received: {[hex(b) for b in reply]}")
+        print(f"<- Received: {[hex(b) for b in reply]}")
         if reply[0] != START_BYTE_REPLY:
             print("Invalid start byte")
             continue
@@ -61,7 +61,7 @@ def read_reply(ser):
 
 
 def main():
-    port = input("Enter serial port (e.g., COM4 or /dev/ttyUSB0): ")
+    port = input("Enter serial port (e.g., COM4 for Windows or /dev/ttyACM0 for Linux): ")
     baud = 9600
     ser = serial.Serial(port, baud, timeout=1)
     time.sleep(2)  # Allow Arduino to reset

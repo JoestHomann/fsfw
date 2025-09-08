@@ -19,11 +19,11 @@ enum commonObjects : object_id_t {
   TEST_DEVICE_HANDLER_1 = 0x4402AFFE,
 
   // Reaction Wheel Handler
-  RW_HANDLER = 0x4403AFFE, // JH
+  //RW_HANDLER = 0x4403AFFE, // JH
 
   /* 0x49 ('I') for Communication Interfaces */
   TEST_ECHO_COM_IF = 0x4900AFFE,
-  RW_SERIAL_COM_IF = 0x4901AFFE, // JH
+  //RW_SERIAL_COM_IF = 0x4901AFFE, // JH
 
   /* 0x63 ('C') for core objects */
   CCSDS_DISTRIBUTOR = 0x63000000,
@@ -41,6 +41,12 @@ enum commonObjects : object_id_t {
   TEST_DUMMY_3 = 0x74000003,
   TEST_DUMMY_4 = 0x74000004,
   TEST_DUMMY_5 = 0x74000005,
+
+  // NEW RwCommanderHandler & Pus objects ---------------------
+ RW_CMD_SERIAL_COM_IF = 0x7302,
+ RW_CMD_HANDLER       = 0x4402,
+ RW_PUS_SERVICE       = 0x5020,
+
 };
 }
 

@@ -11,4 +11,6 @@ target_sources(
           TmSendHelper.cpp
           TmStoreAndSendHelper.cpp
           tcHelpers.cpp
-          tmHelpers.cpp)
+          tmHelpers.cpp
+          # NEW:
+          RwPusService.cpp)

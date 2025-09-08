@@ -4,10 +4,10 @@
 
 #include "fsfw/devicehandlers/DeviceHandlerBase.h"
 
-class ReactionWheelHandler : public DeviceHandlerBase {
+class ReactionWheelsHandler : public DeviceHandlerBase {
  public:
-  ReactionWheelHandler(object_id_t objectId, object_id_t comIF, CookieIF* comCookie);
-  virtual ~ReactionWheelHandler();
+  ReactionWheelsHandler(object_id_t objectId, object_id_t comIF, CookieIF* comCookie);
+  virtual ~ReactionWheelsHandler();
 
   // CRC8 calculation function
   static uint8_t CRC8(const uint8_t* data, size_t len);

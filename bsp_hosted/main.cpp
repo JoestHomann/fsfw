@@ -13,7 +13,7 @@
 #ifdef PLATFORM_WIN
 static const char* COMPILE_PRINTOUT = "Windows";
 #elif defined(PLATFORM_UNIX)
-static const char* COMPILE_PRINTOUT = "Linux (Wer das ließt, ist doof)";
+static const char* COMPILE_PRINTOUT = "Linux";
 #else
 static const char* COMPILE_PRINTOUT = "unknown OS";
 #endif
