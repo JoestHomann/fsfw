@@ -22,6 +22,7 @@ class RwPusService : public CommandingServiceBase {
     STOP      = 2,
     STATUS    = 3,
     SET_MODE  = 10,
+    TM_STATUS = 130,
   };
 
   RwPusService(object_id_t objectId, uint16_t apid, uint8_t serviceId = 220,

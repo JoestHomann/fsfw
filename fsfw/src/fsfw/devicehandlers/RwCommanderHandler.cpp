@@ -138,13 +138,18 @@ ReturnValue_t RwCommanderHandler::buildCommandFromCommand(DeviceCommandId_t devi
 }
 
 void RwCommanderHandler::fillCommandAndReplyMap() {
-  // Commands we emit
-  insertInCommandAndReplyMap(CMD_SET_SPEED, 5);
-  insertInCommandAndReplyMap(CMD_STOP,      5);
-  insertInCommandAndReplyMap(CMD_STATUS,    5);
+  insertInCommandMap(CMD_SET_SPEED, false, 0);
+  insertInCommandMap(CMD_STOP,      false, 0);
 
-  // Reply we expect (exactly 8 bytes)
-  insertInReplyMap(REPLY_STATUS, 8);
+  insertInCommandAndReplyMap(
+      /*deviceCommand*/          CMD_STATUS,
+      /*maxDelayCycles*/         5,
+      /*replyDataSet*/           nullptr,
+      /*replyLen*/               8,           // <-- fixed reply size
+      /*periodic*/               false,
+      /*hasDifferentReplyId*/    true,        // <-- tell FSFW it's a different ID
+      /*replyId*/                REPLY_STATUS,
+      /*countdown*/              nullptr);
 
   sif::info << "RwCommanderHandler: command/reply map set up." << std::endl;
 }
