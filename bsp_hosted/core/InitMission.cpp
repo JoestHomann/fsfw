@@ -251,7 +251,7 @@ void InitMission::createTasks() {
   }
 
 #if FSFW_CPP_OSTREAM_ENABLED == 1
-  sif::info << "Starting tasks.." << std::endl;
+  sif::info << "InitMission: Starting tasks.." << std::endl;
 #else
   sif::printInfo("Starting tasks..\n");
 #endif
@@ -291,7 +291,7 @@ void InitMission::createTasks() {
   testTask->startTask();
 
 #if FSFW_CPP_OSTREAM_ENABLED == 1
-  sif::info << "Tasks started.." << std::endl;
+  sif::info << "InitMission: Tasks started.." << std::endl;
 #else
   sif::printInfo("Tasks started..\n");
 #endif

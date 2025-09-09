@@ -26,6 +26,7 @@
 #include "fsfw/modes/HasModesIF.h"
 #include "fsfw/ipc/QueueFactory.h"
 #include "fsfw/ipc/CommandMessage.h"
+#include "fsfw/devicehandlers/DeviceHandlerFailureIsolation.h"
 // --- JH ---
 
 #if OBSW_USE_TCP_SERVER == 0
@@ -97,74 +98,46 @@ void ObjectFactory::produce(void* args) {
 #endif
   new FsfwTestTask(objects::TEST_TASK, periodicEvent);
 
-  /*
-  // JH (optional): Original ReactionWheelsHandler.
-  // Keep this commented if you use the same serial port for the new commander,
-  // otherwise /dev/ttyACM0 will be opened twice.
-
-  // SerialComIF and SerialCookie for Reaction Wheel
-  auto* serialComIf = new SerialComIF(objects::RW_SERIAL_COM_IF);
-
-  auto* rwSerialCookie = new SerialCookie(
-      objects::RW_HANDLER,          // owner (the device handler's object id)
-      "/dev/ttyACM0",               // device file
-      UartBaudRate::RATE_9600,      // enum from fsfw_hal/linux/serial/helper.h
-      256,                          // max expected reply length [bytes]
-      UartModes::NON_CANONICAL      // binary protocol (no line delimiters)
-  );
-
-  // Create the ReactionWheelsHandler
-  auto* rwHandler = new ReactionWheelsHandler(
-      objects::RW_HANDLER,          // handler object id
-      objects::RW_SERIAL_COM_IF,    // comIF object id
-      rwSerialCookie
-  );
-
-  // Create a periodic task for the ReactionWheelsHandler
-  PeriodicTaskIF* rwTask = TaskFactory::instance()->createPeriodicTask(
-      "RW_HANDLER_TASK",  // task name
-      40,                 // priority
-      4096,               // stack size
-      0.2,                // period [s]
-      nullptr             // deadline missed callback (optional)
-  );
-
-  // Add the handler so it gets executed periodically
-  rwTask->addComponent(rwHandler);
-  */
-
   // ---------------- rwCommanderHandler ------------------------
   // --- JH: RwCommanderHandler (minimal serial commander)
-  // WARNING: Do not open the same /dev/tty* in multiple handlers at once.
-  auto* rwCmdComIf = new SerialComIF(objects::RW_CMD_SERIAL_COM_IF);
+(void) new SerialComIF(objects::RW_CMD_SERIAL_COM_IF);  // SystemObject registriert sich selbst
 
-  auto* rwCmdCookie = new SerialCookie(
-      objects::RW_CMD_HANDLER,      // owner id (handler)
-      "/dev/ttyACM0",               // adjust to your setup
-      UartBaudRate::RATE_9600,      // must match Arduino sketch
-      1024,                         // read buffer size
-      UartModes::NON_CANONICAL      // raw binary mode
-  );
+auto* rwCmdCookie = new SerialCookie(
+    objects::RW_CMD_HANDLER,
+    "/dev/ttyACM0",                // ggf. anpassen
+    UartBaudRate::RATE_9600,
+    1024,
+    UartModes::NON_CANONICAL);
 
-  // Create the commander handler
-  auto* rwCmdHandler =
-      new RwCommanderHandler(objects::RW_CMD_HANDLER, objects::RW_CMD_SERIAL_COM_IF, rwCmdCookie);
+rwCmdCookie->setReadCycles(5);      // allow up to 5 read() attempts per GET_READ phase
+rwCmdCookie->setToFlushInput(true); // optional: flush stale bytes after opening port
 
-  // Put handler into its own periodic task (e.g., 5 Hz)
-  PeriodicTaskIF* rwCmdTask =
-      TaskFactory::instance()->createPeriodicTask("RW_CMD_TASK", 40, 4096, 0.2, nullptr);
-  rwCmdTask->addComponent(rwCmdHandler);
-  rwCmdTask->startTask();
+auto* rwCmdHandler =
+    new RwCommanderHandler(objects::RW_CMD_HANDLER,
+                           objects::RW_CMD_SERIAL_COM_IF,
+                           rwCmdCookie);
+/*
+// --- JH: FDIR-Objekt einfach erzeugen (Owner = dein Handler) ---
+new DeviceHandlerFailureIsolation(objects::RW_CMD_HANDLER, objects::NO_OBJECT);
 
-  // Put the handler into RAW (required for RAW forwarding via PUS service)
-  {
-    CommandMessage mm;
-    ModeMessage::setModeMessage(&mm, ModeMessage::CMD_MODE_COMMAND,
-                                DeviceHandlerIF::MODE_RAW, 0);  // NOTE: DeviceHandlerIF, not HasModesIF
-    auto* tmp = QueueFactory::instance()->createMessageQueue(1, CommandMessage::MAX_MESSAGE_SIZE);
-    tmp->sendMessage(rwCmdHandler->getCommandQueue(), &mm);
-  }
-  // ---------------- rwCommanderHandler ------------------------
+// Task anlegen und starten
+auto* rwCmdTask =
+    TaskFactory::instance()->createPeriodicTask("RW_CMD_TASK", 40, 4096, 0.2, nullptr);
+rwCmdTask->addComponent(rwCmdHandler);
+rwCmdTask->startTask();
+// -----------------------------------------------------------------
+*/
+/*
+{
+  CommandMessage mm;
+  // switch to NORMAL so buildNormalDeviceCommand() runs periodically
+  ModeMessage::setModeMessage(&mm, ModeMessage::CMD_MODE_COMMAND,
+                              DeviceHandlerIF::MODE_NORMAL, 0);
+  auto* tmp = QueueFactory::instance()->createMessageQueue(
+      1, CommandMessage::MAX_MESSAGE_SIZE);
+  tmp->sendMessage(rwCmdHandler->getCommandQueue(), &mm);
+}
+*/
 
   // ---------------- RwPusService (PUS-220) --------------------
   // If you already have a common TM/TC services task, simply addComponent(rwPus) there.
