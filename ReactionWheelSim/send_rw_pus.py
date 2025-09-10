@@ -27,8 +27,9 @@ MODE_RAW    = 3
 # Default destination object (objects::RW_CMD_HANDLER, big-endian in AppData)
 RW_CMD_HANDLER_OID = 0x00004402
 
-# Default TM drain window after sending a TC (seconds)
-TM_DRAIN_DEFAULT = 100.0
+# ---- Receive tuning ----
+SOCKET_TIMEOUT_S   = 0.8   # timeout for a single recv() attempt
+WAIT_AFTER_CMD_S   = 3.0   # total listen window after a command
 
 # ---------- CRC16-CCITT (FALSE): poly 0x1021, init 0xFFFF ----------
 def crc16_ccitt_false(data: bytes, poly=0x1021, init=0xFFFF) -> int:
@@ -73,59 +74,55 @@ def be_u32(x): return struct.pack(">I", x)
 def be_i16(x): return struct.pack(">h", x)
 
 def make_socket():
-    # One connected UDP socket to send and receive TM from the same source port
+    # one connected UDP socket to send and receive TM from the same source port
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.connect((UDP_HOST, UDP_PORT))   # fix local port and remote addr
-    s.settimeout(0.3)                 # small timeout for recv()
+    s.settimeout(SOCKET_TIMEOUT_S)
     return s
 
 def send_tc(sock: socket.socket, packet: bytes):
     sock.send(packet)  # connected socket
 
-def drain_tm(sock: socket.socket, oid: int, total_time_s: float = TM_DRAIN_DEFAULT) -> bool:
-    """
-    Read TM for up to total_time_s seconds and decode TM_STATUS packets.
-    Returns True if at least one TM_STATUS was received and decoded.
-    """
-    saw_tm_status = False
-    deadline = time.time() + total_time_s
-    while time.time() < deadline:
-        try:
-            data = sock.recv(4096)
-        except socket.timeout:
-            break
-        if handle_tm(data, oid):
-            saw_tm_status = True
-    if not saw_tm_status:
-        print("(!) No TM_STATUS (svc=220, sub=130) received in window.")
-    return saw_tm_status
-
-def handle_tm(data: bytes, oid: int) -> bool:
-    """
-    Minimal PUS TM parsing. Prints all TMs and specifically decodes TM_STATUS app data.
-    Returns True if this packet was a TM_STATUS with valid payload, else False.
-    """
+def handle_tm(data: bytes, oid: int):
+    # Minimal PUS TM parsing: primary header 6 bytes, then PUS sec-hdr (TM: [ver|sc|ssc?], service, subservice, ...).
     if len(data) < 10:
-        return False
+        return
     service  = data[7]
     subsvc   = data[8]
     print(f"TM: svc={service} subsvc={subsvc} len={len(data)}")
-    if service != SERVICE or subsvc != SUB_TM_STATUS:
-        return False
 
-    # AppData from RwPusService: oid(4) | speed(i16) | torque(i16) | running(u8)
-    # Find the 4-byte object id as a marker inside the TM after the TM sec-hdr.
-    marker = oid.to_bytes(4, "big")
-    i = data.find(marker, 9)  # search after PUS TM secondary header
-    if i == -1 or i + 9 > len(data):
-        print("TM_STATUS: could not locate AppData marker in TM")
-        return False
+    # Our STATUS TM?
+    if service == SERVICE and subsvc == SUB_TM_STATUS:
+        # AppData layout (from RwPusService): oid(4)|speed(i16)|torque(i16)|running(u8)
+        marker = oid.to_bytes(4, "big")
+        start = data.find(marker, 9)  # search after PUS sec-hdr
+        if start != -1 and start + 9 <= len(data):
+            speed   = int.from_bytes(data[start+4:start+6], "big", signed=True)
+            torque  = int.from_bytes(data[start+6:start+8], "big", signed=True)
+            running = data[start+8]
+            print(f"RW TM_STATUS: oid=0x{oid:08X}  speed={speed} rpm  torque={torque} mNm  running={running}")
 
-    speed   = int.from_bytes(data[i+4:i+6], "big", signed=True)
-    torque  = int.from_bytes(data[i+6:i+8], "big", signed=True)
-    running = data[i+8]
-    print(f"RW TM_STATUS: oid=0x{oid:08X}  speed={speed} rpm  torque={torque} mNm  running={running}")
-    return True
+def drain_tm(sock: socket.socket, oid: int, total_time_s: float = WAIT_AFTER_CMD_S):
+    """Read TM up to total_time_s seconds and decode TM_STATUS packets."""
+    deadline = time.time() + total_time_s
+    got_any = False
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        # keep per-read timeout bounded
+        sock.settimeout(min(SOCKET_TIMEOUT_S, max(0.05, remaining)))
+        try:
+            data = sock.recv(4096)
+        except socket.timeout:
+            continue
+        except Exception as e:
+            print(f"(recv error: {e})")
+            break
+        got_any = True
+        handle_tm(data, oid)
+    if not got_any:
+        print(f"(!) No TM received in {total_time_s:.1f}s window.")
 
 # ---------- Command builders ----------
 def rw_set_speed(sock, oid_u32, rpm, seq):
@@ -155,7 +152,7 @@ Commands:
   status               - Send STATUS request
   stop                 - Send STOP
   mode <name> [sub]    - Send SET_MODE, names: off,on,normal,raw  (default sub=0)
-  watch <period_s>     - Periodically request STATUS every <period_s> seconds
+  listen [seconds]     - Only listen for TM and print what arrives (default 5s)
   oid <hex|dec>        - Change target object id (default 0x00004402)
   who                  - Show current settings
   help                 - Show this help
@@ -201,7 +198,7 @@ def main():
             print(HELP)
 
         elif cmd == "who":
-            print(f"UDP={UDP_HOST}:{UDP_PORT}  APID=0x{APID:03X}  OID=0x{oid:08X}")
+            print(f"UDP={UDP_HOST}:{UDP_PORT}  APID=0x{APID:03X}  OID=0x{oid:08X}  wait={WAIT_AFTER_CMD_S}s  timeout={SOCKET_TIMEOUT_S}s")
 
         elif cmd == "oid":
             if len(parts) < 2:
@@ -221,19 +218,22 @@ def main():
                 rpm = int(parts[1])
                 print(f"Sending SET_SPEED {rpm} rpm")
                 rw_set_speed(sock, oid, rpm, next(seq))
-                drain_tm(sock, oid, TM_DRAIN_DEFAULT)  # read TM after command
+                print(f"...listening up to {WAIT_AFTER_CMD_S}s for TM")
+                drain_tm(sock, oid, WAIT_AFTER_CMD_S)
             except ValueError:
                 print("Invalid RPM")
 
         elif cmd == "status":
             print("Requesting STATUS")
             rw_status(sock, oid, next(seq))
-            drain_tm(sock, oid, TM_DRAIN_DEFAULT)
+            print(f"...listening up to {WAIT_AFTER_CMD_S}s for TM")
+            drain_tm(sock, oid, WAIT_AFTER_CMD_S)
 
         elif cmd == "stop":
             print("Sending STOP")
             rw_stop(sock, oid, next(seq))
-            drain_tm(sock, oid, TM_DRAIN_DEFAULT)
+            print(f"...listening up to {WAIT_AFTER_CMD_S}s for TM")
+            drain_tm(sock, oid, WAIT_AFTER_CMD_S)
 
         elif cmd == "mode":
             if len(parts) < 2:
@@ -251,31 +251,13 @@ def main():
             mode_val = MODE_NAMES[name]
             print(f"Sending SET_MODE {name.upper()} (mode={mode_val}, sub={sub})")
             rw_set_mode(sock, oid, mode_val, sub, next(seq))
-            drain_tm(sock, oid, TM_DRAIN_DEFAULT)
+            print(f"...listening up to {WAIT_AFTER_CMD_S}s for TM")
+            drain_tm(sock, oid, WAIT_AFTER_CMD_S)
 
-        elif cmd == "watch":
-            if len(parts) < 2:
-                print("usage: watch <period_seconds>")
-                continue
-            try:
-                period = float(parts[1])
-                if period <= 0:
-                    raise ValueError
-            except ValueError:
-                print("Invalid period")
-                continue
-            print(f"Watching STATUS every {period}s. Press Ctrl-C to stop.")
-            try:
-                while True:
-                    rw_status(sock, oid, next(seq))
-                    # Drain for most of the period to catch TM; then sleep remainder
-                    start = time.time()
-                    drain_tm(sock, oid, max(0.2, period * 0.8))
-                    elapsed = time.time() - start
-                    time.sleep(max(0.0, period - elapsed))
-            except KeyboardInterrupt:
-                print("\nStopped watching.")
-                continue
+        elif cmd == "listen":
+            secs = float(parts[1]) if len(parts) >= 2 else 5.0
+            print(f"Listening for TM for {secs:.1f}s...")
+            drain_tm(sock, oid, secs)
 
         else:
             print("Unknown command. Type 'help'.")

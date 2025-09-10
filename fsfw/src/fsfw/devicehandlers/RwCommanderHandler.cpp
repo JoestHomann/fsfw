@@ -3,6 +3,7 @@
 #include <cstring>
 #include "fsfw/returnvalues/returnvalue.h"
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
+#include "fsfw/devicehandlers/DeviceHandlerIF.h"
 
 RwCommanderHandler::RwCommanderHandler(object_id_t objectId, object_id_t comIF, CookieIF* cookie)
     : DeviceHandlerBase(objectId, comIF, cookie) {}
@@ -36,12 +37,13 @@ void RwCommanderHandler::modeChanged() {
 }
 
 ReturnValue_t RwCommanderHandler::buildNormalDeviceCommand(DeviceCommandId_t* id) {
-  // Optional trace: proves the task calls into our handler
-  sif::info << "RwCommanderHandler: tick" << std::endl;
+  // DEBUG: proves the task calls into our handler
+  //sif::info << "RwCommanderHandler: tick" << std::endl;
 
   // Give the USB CDC device a tiny grace period after open/reset
   if (warmupCnt < warmupCycles) {
     ++warmupCnt;
+    *id = DeviceHandlerIF::NO_COMMAND_ID;
     return returnvalue::OK;
   }
 
@@ -56,7 +58,7 @@ ReturnValue_t RwCommanderHandler::buildNormalDeviceCommand(DeviceCommandId_t* id
 
     rawPacket    = txBuf;
     rawPacketLen = 5;
-    *id          = CMD_STATUS;
+    *id          = CMD_STATUS_POLL;
 
 #if FSFW_CPP_OSTREAM_ENABLED == 1
     sif::info << "RwCommanderHandler: sending raw ["
@@ -70,12 +72,22 @@ ReturnValue_t RwCommanderHandler::buildNormalDeviceCommand(DeviceCommandId_t* id
   }
 
   // Nothing to send this cycle
+  *id = DeviceHandlerIF::NO_COMMAND_ID;
   return returnvalue::OK;
 }
 
-ReturnValue_t RwCommanderHandler::buildTransitionDeviceCommand(DeviceCommandId_t*) {
+ReturnValue_t RwCommanderHandler::buildTransitionDeviceCommand(DeviceCommandId_t* id) {
+  *id = DeviceHandlerIF::NO_COMMAND_ID;
   return returnvalue::OK;
 }
+/*
+ReturnValue_t RwCommanderHandler::executeAction(ActionId_t actionId,
+                                                MessageQueueId_t,
+                                                const uint8_t* data, size_t size) {
+   
+  return buildCommandFromCommand(static_cast<DeviceCommandId_t>(actionId), data, size);
+}
+*/
 
 ReturnValue_t RwCommanderHandler::buildCommandFromCommand(DeviceCommandId_t deviceCommand,
                                                           const uint8_t* data, size_t len) {
@@ -145,9 +157,19 @@ void RwCommanderHandler::fillCommandAndReplyMap() {
       /*deviceCommand*/          CMD_STATUS,
       /*maxDelayCycles*/         5,
       /*replyDataSet*/           nullptr,
-      /*replyLen*/               8,           // <-- fixed reply size
+      /*replyLen*/               8,           
       /*periodic*/               false,
-      /*hasDifferentReplyId*/    true,        // <-- tell FSFW it's a different ID
+      /*hasDifferentReplyId*/    true,        
+      /*replyId*/                REPLY_STATUS,
+      /*countdown*/              nullptr);
+
+  insertInCommandAndReplyMap(
+      /*deviceCommand*/          CMD_STATUS_POLL,
+      /*maxDelayCycles*/         5,
+      /*replyDataSet*/           nullptr,
+      /*replyLen*/               8,           
+      /*periodic*/               false,
+      /*hasDifferentReplyId*/    true,        
       /*replyId*/                REPLY_STATUS,
       /*countdown*/              nullptr);
 
@@ -185,11 +207,15 @@ ReturnValue_t RwCommanderHandler::scanForReply(const uint8_t* start, size_t len,
 ReturnValue_t RwCommanderHandler::interpretDeviceReply(DeviceCommandId_t id,
                                                        const uint8_t* packet) {
   if (id == REPLY_STATUS) {
-    const int16_t speed  = static_cast<int16_t>((packet[2] << 8) | packet[3]);
-    const int16_t torque = static_cast<int16_t>((packet[4] << 8) | packet[5]);
-    const bool running   = (packet[6] != 0);
-    sif::info << "RW STATUS: speed=" << speed << " RPM, torque=" << torque
-              << " mNm, running=" << running << std::endl;
+    const int16_t speed   = static_cast<int16_t>((packet[2] << 8) | packet[3]);
+    const int16_t torque  = static_cast<int16_t>((packet[4] << 8) | packet[5]);
+    const uint8_t running = packet[6];
+
+    sif::info << "RW STATUS: speed=" << speed
+              << " RPM, torque=" << torque
+              << " mNm, running=" << int(running) << std::endl;
+
+    
     return returnvalue::OK;
   }
   return returnvalue::FAILED;
@@ -197,7 +223,7 @@ ReturnValue_t RwCommanderHandler::interpretDeviceReply(DeviceCommandId_t id,
 
 // Give the state machine time between mode transitions so timeouts don't fire immediately.
 uint32_t RwCommanderHandler::getTransitionDelayMs(Mode_t /*from*/, Mode_t /*to*/) {
-  return 2000;  // 2 s; tune as needed for your setup
+  return 200;  // 200 ms; tune as needed for your setup
 }
 
 ReturnValue_t RwCommanderHandler::initializeLocalDataPool(localpool::DataPool&, LocalDataPoolManager&) {

@@ -3,6 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 #include "fsfw/devicehandlers/DeviceHandlerBase.h"
+#include "commonObjects.h"
+#include "fsfw/devicehandlers/DeviceHandlerIF.h"
+#include "fsfw/action/HasActionsIF.h"
 
 /**
  * Minimal device handler for a reaction wheel simulator.
@@ -41,7 +44,12 @@ class RwCommanderHandler : public DeviceHandlerBase {
   uint32_t getTransitionDelayMs(Mode_t modeFrom, Mode_t modeTo) override;
   ReturnValue_t initializeLocalDataPool(localpool::DataPool& map,
                                         LocalDataPoolManager& mgr) override;
-
+/*
+  // Map Action IDs directly to DeviceCommandIds
+  ReturnValue_t executeAction(ActionId_t actionId,
+                              MessageQueueId_t commandedBy,
+                              const uint8_t* data, size_t size) override;
+*/
  private:
   // Protocol constants / IDs
   static constexpr uint8_t START_BYTE_CMD   = 0xAA;
@@ -49,7 +57,8 @@ class RwCommanderHandler : public DeviceHandlerBase {
 
   static constexpr DeviceCommandId_t CMD_SET_SPEED = 0x01;
   static constexpr DeviceCommandId_t CMD_STOP      = 0x02;
-  static constexpr DeviceCommandId_t CMD_STATUS    = 0x03;
+  static constexpr DeviceCommandId_t CMD_STATUS    = 0x03;    // external status request
+  static constexpr DeviceCommandId_t CMD_STATUS_POLL = 0x13;  // internal periodic poll
 
   static constexpr DeviceCommandId_t REPLY_STATUS  = 0x10;
 
