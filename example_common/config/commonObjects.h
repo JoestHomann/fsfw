@@ -45,7 +45,7 @@ enum commonObjects : object_id_t {
   // NEW RwCommanderHandler & Pus objects ---------------------
  RW_CMD_SERIAL_COM_IF = 0x7302,
  RW_CMD_HANDLER       = 0x4402,
- //PUS_SERVICE_8       = 0x00005008,
+ RW_PUS_SERVICE       = 0x5020,
 
 };
 }

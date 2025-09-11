@@ -20,7 +20,7 @@
 
 // --- JH: RwCommanderHandler & PUS service ---
 #include "fsfw/src/fsfw/devicehandlers/RwCommanderHandler.h"
-#include "fsfw/pus/Service8FunctionManagement.h"
+#include "fsfw/src/fsfw/tmtcservices/RwPusService.h"
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"  // for DeviceHandlerIF::MODE_RAW
 #include "fsfw/modes/ModeMessage.h"
 #include "fsfw/modes/HasModesIF.h"
@@ -100,24 +100,58 @@ void ObjectFactory::produce(void* args) {
 
   // ---------------- rwCommanderHandler ------------------------
   // --- JH: RwCommanderHandler (minimal serial commander)
-auto* serialIf = new SerialComIF(objects::RW_CMD_SERIAL_COM_IF);
-  (void)serialIf; // avoid -Wunused-variable if not referenced further
+(void) new SerialComIF(objects::RW_CMD_SERIAL_COM_IF);  // SystemObject registriert sich selbst
 
-  // --- Choose the actual device path in WSL (check with: ls -l /dev/ttyACM* /dev/ttyUSB*)
-  constexpr const char* RW_DEV = "/dev/ttyACM0";
+auto* rwCmdCookie = new SerialCookie(
+    objects::RW_CMD_HANDLER,
+    "/dev/ttyACM0",                // ggf. anpassen
+    UartBaudRate::RATE_9600,
+    1024,
+    UartModes::NON_CANONICAL);
 
-  // English: Create cookie for the RW handler. 20 ms read timeout, raw (non-canonical) mode.
-  auto* rwCookie = new SerialCookie(
-      objects::RW_CMD_HANDLER,          // handler (target device handler OID)
-      std::string(RW_DEV),              // device file
-      UartBaudRate::RATE_115200,        // baud rate (enum)
-      20,                                // read timeout [ms]
-      UartModes::NON_CANONICAL          // raw mode
-  );
+rwCmdCookie->setReadCycles(5);      // allow up to 5 read() attempts per GET_READ phase
+rwCmdCookie->setToFlushInput(true); // optional: flush stale bytes after opening port
 
-  // --- Create the device handler
-  [[maybe_unused]] auto* rwCmdHandler =
-      new RwCommanderHandler(objects::RW_CMD_HANDLER, objects::RW_CMD_SERIAL_COM_IF, rwCookie);
+auto* rwCmdHandler =
+    new RwCommanderHandler(objects::RW_CMD_HANDLER,
+                           objects::RW_CMD_SERIAL_COM_IF,
+                           rwCmdCookie);
+/*
+// --- JH: FDIR-Objekt einfach erzeugen (Owner = dein Handler) ---
+new DeviceHandlerFailureIsolation(objects::RW_CMD_HANDLER, objects::NO_OBJECT);
+
+// Task anlegen und starten
+auto* rwCmdTask =
+    TaskFactory::instance()->createPeriodicTask("RW_CMD_TASK", 40, 4096, 0.2, nullptr);
+rwCmdTask->addComponent(rwCmdHandler);
+rwCmdTask->startTask();
+// -----------------------------------------------------------------
+*/
+/*
+{
+  CommandMessage mm;
+  // switch to NORMAL so buildNormalDeviceCommand() runs periodically
+  ModeMessage::setModeMessage(&mm, ModeMessage::CMD_MODE_COMMAND,
+                              DeviceHandlerIF::MODE_NORMAL, 0);
+  auto* tmp = QueueFactory::instance()->createMessageQueue(
+      1, CommandMessage::MAX_MESSAGE_SIZE);
+  tmp->sendMessage(rwCmdHandler->getCommandQueue(), &mm);
+}
+*/
+
+  // ---------------- RwPusService (PUS-220) --------------------
+  // If you already have a common TM/TC services task, simply addComponent(rwPus) there.
+  constexpr uint16_t RW_PUS_APID = 0x00EF;  // pick an APID suitable for your setup
+  auto* rwPus = new RwPusService(objects::RW_PUS_SERVICE,
+                               RW_PUS_APID,
+                               /*serviceId*/ 220,
+                               /*numParallelCommands*/ 4,
+                               /*timeoutSeconds*/ 5);
 
 
+  PeriodicTaskIF* pusTask =
+      TaskFactory::instance()->createPeriodicTask("PUS_RW_SERVICE", 35, 4096, 0.2, nullptr);
+  pusTask->addComponent(rwPus);
+  pusTask->startTask();
+  // ---------------- RwPusService (PUS-220) --------------------
 }

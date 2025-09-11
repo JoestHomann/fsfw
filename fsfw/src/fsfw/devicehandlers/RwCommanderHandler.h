@@ -6,7 +6,6 @@
 #include "commonObjects.h"
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"
 #include "fsfw/action/HasActionsIF.h"
-#include "fsfw/datapoollocal/LocalDataPoolManager.h"
 
 /**
  * Minimal device handler for a reaction wheel simulator.

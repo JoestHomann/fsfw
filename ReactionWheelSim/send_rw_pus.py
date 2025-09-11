@@ -8,23 +8,15 @@ UDP_HOST = "127.0.0.1"
 UDP_PORT = 7301
 
 # --------- PUS / CCSDS basics ----------
-APID    = 0x00EF
+APID    = 0x00EF           # must match your RwPusService APID
 SRC_ID  = 0x0001
+SERVICE = 220              # RwPusService
 
-# ---- PUS Service 8 (Action / Function Management) ----
-SERVICE_ACT         = 8
-# FSFW Service 8 uses subservice 128 for direct commanding (perform action)
-SUB_PERFORM_ACTION  = 128
-SUB_DATA_REPLY      = 130   # TM[8,130]
-
-# ---- PUS Service 5 (Mode Management) ----
-SERVICE_MODE        = 5
-SUB_SET_MODE        = 1
-
-# Action IDs (map 1:1 to your DeviceHandler command IDs)
-ACT_SET_SPEED = 0x00000001
-ACT_STOP      = 0x00000002
-ACT_STATUS    = 0x00000003
+SUB_SET_SPEED = 1
+SUB_STOP      = 2
+SUB_STATUS    = 3
+SUB_SET_MODE  = 10
+SUB_TM_STATUS = 130        # TM subservice for STATUS reply (128 + 3)
 
 # DeviceHandler modes (FSFW default enum values)
 MODE_OFF    = 0
@@ -55,21 +47,18 @@ def crc16_ccitt_false(data: bytes, poly=0x1021, init=0xFFFF) -> int:
 def ccsds_tc_primary_header(apid, seq_count, bytes_after_primary):
     # Version=0, Type=1 (TC), SecHdrFlag=1 -> 0x1800
     first  = 0x1800 | (apid & 0x07FF)
-    # Sequence flags '11' + sequence count
-    second = 0xC000 | (seq_count & 0x3FFF)
-    # Packet Length = bytes after PH minus 1
+    second = 0xC000 | (seq_count & 0x3FFF)      # '11' + seq
     pkt_len = (bytes_after_primary - 1) & 0xFFFF
     return struct.pack(">HHH", first, second, pkt_len)
 
 VER_ACK = 0x2F  # PUS-C
 
 def pus_tc_sec_hdr(service, subservice, src_id):
-    # PUS-C TC secondary header: [Version/Ack][Service][Subservice][SourceID]
     return struct.pack(">BBBH", VER_ACK, service & 0xFF, subservice & 0xFF, src_id & 0xFFFF)
 
 def build_tc(apid, service, subservice, app_data: bytes, seq_count):
     sec = pus_tc_sec_hdr(service, subservice, SRC_ID) + app_data
-    after_ph_len  = len(sec) + 2  # add 2 bytes CRC16
+    after_ph_len  = len(sec) + 2  # +CRC
     ph            = ccsds_tc_primary_header(apid, seq_count, after_ph_len)
     whole_wo_crc  = ph + sec
     crc           = crc16_ccitt_false(whole_wo_crc)
@@ -83,80 +72,45 @@ def build_tc(apid, service, subservice, app_data: bytes, seq_count):
 # ---------- Helpers ----------
 def be_u32(x): return struct.pack(">I", x)
 def be_i16(x): return struct.pack(">h", x)
-def be_f32(x): return struct.pack(">f", float(x))
 
 def make_socket():
+    # one connected UDP socket to send and receive TM from the same source port
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    # Connected UDP socket simplifies send/recv
-    s.connect((UDP_HOST, UDP_PORT))
+    s.connect((UDP_HOST, UDP_PORT))   # fix local port and remote addr
     s.settimeout(SOCKET_TIMEOUT_S)
     return s
 
 def send_tc(sock: socket.socket, packet: bytes):
-    sock.send(packet)
-
-# ---------- Minimal TM decoding ----------
-def print_verification_tm(service: int, subsvc: int):
-    # PUS Service 1 (Verification) quick legend:
-    # 1 Acceptance Success, 2 Acceptance Failure
-    # 3 Start Success,     4 Start Failure
-    # 5 Progress Success,  6 Progress Failure
-    # 7 Completion Success,8 Completion Failure
-    if service != 1:
-        return
-    meaning = {
-        1: "Acceptance Success",
-        2: "Acceptance Failure",
-        3: "Start Success",
-        4: "Start Failure",
-        5: "Progress Success",
-        6: "Progress Failure",
-        7: "Completion Success",
-        8: "Completion Failure",
-    }.get(subsvc, "Unknown Verification TM")
-    print(f"TM[1,{subsvc}]: {meaning}")
+    sock.send(packet)  # connected socket
 
 def handle_tm(data: bytes, oid: int):
-    # Very lightweight PUS TM parsing: PH = 6 bytes, then PUS TM secondary header.
+    # Minimal PUS TM parsing: primary header 6 bytes, then PUS sec-hdr (TM: [ver|sc|ssc?], service, subservice, ...).
     if len(data) < 10:
         return
     service  = data[7]
     subsvc   = data[8]
     print(f"TM: svc={service} subsvc={subsvc} len={len(data)}")
-    print_verification_tm(service, subsvc)
 
-    # ---- Service 8, Data Reply ----
-    if service == SERVICE_ACT and subsvc == SUB_DATA_REPLY:
-        # FSFW Service 8 packs: [oid:4][action:4][payload...]
-        start = 9  # after PUS sec header
-        if len(data) < start + 8:
-            print("   (TM[8,130] too short)")
-            return
-        app = data[start:]
-        oid_be   = int.from_bytes(app[0:4], "big")
-        act_be   = int.from_bytes(app[4:8], "big")
-        payload  = app[8:]
-        print(f"   (DataReply) oid=0x{oid_be:08X} act=0x{act_be:08X} payload_len={len(payload)}")
-
-        # Device-specific decode: try to find the RW status frame 'AB 10 ..'
-        pos = payload.find(b'\xAB\x10')
-        if pos != -1 and pos + 8 <= len(payload):
-            p = payload[pos:pos+8]
-            speed   = int.from_bytes(p[2:4], "big", signed=True)
-            torque  = int.from_bytes(p[4:6], "big", signed=True)
-            running = p[6]
-            print(f"   RW STATUS: speed={speed} rpm  torque={torque} mNm  running={running}")
-        else:
-            print("   (No embedded 'AB 10' RW frame found)")
+    # Our STATUS TM?
+    if service == SERVICE and subsvc == SUB_TM_STATUS:
+        # AppData layout (from RwPusService): oid(4)|speed(i16)|torque(i16)|running(u8)
+        marker = oid.to_bytes(4, "big")
+        start = data.find(marker, 9)  # search after PUS sec-hdr
+        if start != -1 and start + 9 <= len(data):
+            speed   = int.from_bytes(data[start+4:start+6], "big", signed=True)
+            torque  = int.from_bytes(data[start+6:start+8], "big", signed=True)
+            running = data[start+8]
+            print(f"RW TM_STATUS: oid=0x{oid:08X}  speed={speed} rpm  torque={torque} mNm  running={running}")
 
 def drain_tm(sock: socket.socket, oid: int, total_time_s: float = WAIT_AFTER_CMD_S):
-    """Read TM up to total_time_s seconds and decode replies."""
+    """Read TM up to total_time_s seconds and decode TM_STATUS packets."""
     deadline = time.time() + total_time_s
     got_any = False
     while True:
         remaining = deadline - time.time()
         if remaining <= 0:
             break
+        # keep per-read timeout bounded
         sock.settimeout(min(SOCKET_TIMEOUT_S, max(0.05, remaining)))
         try:
             data = sock.recv(4096)
@@ -171,40 +125,33 @@ def drain_tm(sock: socket.socket, oid: int, total_time_s: float = WAIT_AFTER_CMD
         print(f"(!) No TM received in {total_time_s:.1f}s window.")
 
 # ---------- Command builders ----------
-def rw_action(sock, oid_u32, act_id_u32, params: bytes, seq):
-    # AppData: [object_id(4,BE) | action_id(4,BE) | params...]
-    app = be_u32(oid_u32) + be_u32(act_id_u32) + params
-    pkt = build_tc(APID, SERVICE_ACT, SUB_PERFORM_ACTION, app, seq)
+def rw_set_speed(sock, oid_u32, rpm, seq):
+    app = be_u32(oid_u32) + be_i16(rpm)
+    pkt = build_tc(APID, SERVICE, SUB_SET_SPEED, app, seq)
     send_tc(sock, pkt)
 
-def rw_set_speed(sock, oid_u32, rpm, seq):
-    # Preferred: send 2-byte signed int (big-endian)
-    rw_action(sock, oid_u32, ACT_SET_SPEED, be_i16(int(rpm)), seq)
-
-def rw_set_speed_f(sock, oid_u32, rpm_f, seq):
-    # Optional: send 4-byte float if you want to test the float path in your handler
-    rw_action(sock, oid_u32, ACT_SET_SPEED, be_f32(rpm_f), seq)
-
 def rw_stop(sock, oid_u32, seq):
-    rw_action(sock, oid_u32, ACT_STOP, b"", seq)
+    app = be_u32(oid_u32)
+    pkt = build_tc(APID, SERVICE, SUB_STOP, app, seq)
+    send_tc(sock, pkt)
 
 def rw_status(sock, oid_u32, seq):
-    rw_action(sock, oid_u32, ACT_STATUS, b"", seq)
+    app = be_u32(oid_u32)
+    pkt = build_tc(APID, SERVICE, SUB_STATUS, app, seq)
+    send_tc(sock, pkt)
 
 def rw_set_mode(sock, oid_u32, mode, submode, seq):
-    # PUS Service 5: [oid(4)][mode(1)][submode(1)]
     app = be_u32(oid_u32) + bytes([mode & 0xFF, submode & 0xFF])
-    pkt = build_tc(APID, SERVICE_MODE, SUB_SET_MODE, app, seq)
+    pkt = build_tc(APID, SERVICE, SUB_SET_MODE, app, seq)
     send_tc(sock, pkt)
 
 # ---------- CLI ----------
 HELP = """\
 Commands:
-  set <rpm>            - Send SET_SPEED as int16 (Service 8 / Subservice 128)
-  setf <rpm_float>     - Send SET_SPEED as float32
-  status               - Send STATUS   (Service 8 / Subservice 128)
-  stop                 - Send STOP     (Service 8 / Subservice 128)
-  mode <name> [sub]    - Send SET_MODE (Service 5), names: off,on,normal,raw  (default sub=0)
+  set <rpm>            - Send SET_SPEED with signed RPM (e.g. set 1000)
+  status               - Send STATUS request
+  stop                 - Send STOP
+  mode <name> [sub]    - Send SET_MODE, names: off,on,normal,raw  (default sub=0)
   listen [seconds]     - Only listen for TM and print what arrives (default 5s)
   oid <hex|dec>        - Change target object id (default 0x00004402)
   who                  - Show current settings
@@ -226,7 +173,7 @@ def parse_int(s: str) -> int:
     return int(s, 10)
 
 def main():
-    print("Interactive PUS-8 sender for RW (Subservice 128). Type 'help' for commands.")
+    print("Interactive PUS-220 sender for RW. Type 'help' for commands.")
     oid = RW_CMD_HANDLER_OID
     seq = itertools.count()
     sock = make_socket()  # one socket for TX+RX
@@ -269,25 +216,12 @@ def main():
                 continue
             try:
                 rpm = int(parts[1])
-                print(f"Sending SET_SPEED {rpm} rpm (int16)")
+                print(f"Sending SET_SPEED {rpm} rpm")
                 rw_set_speed(sock, oid, rpm, next(seq))
                 print(f"...listening up to {WAIT_AFTER_CMD_S}s for TM")
                 drain_tm(sock, oid, WAIT_AFTER_CMD_S)
             except ValueError:
                 print("Invalid RPM")
-
-        elif cmd == "setf":
-            if len(parts) < 2:
-                print("usage: setf <rpm_float>")
-                continue
-            try:
-                rpmf = float(parts[1])
-                print(f"Sending SET_SPEED {rpmf} rpm (float32)")
-                rw_set_speed_f(sock, oid, rpmf, next(seq))
-                print(f"...listening up to {WAIT_AFTER_CMD_S}s for TM")
-                drain_tm(sock, oid, WAIT_AFTER_CMD_S)
-            except ValueError:
-                print("Invalid RPM float")
 
         elif cmd == "status":
             print("Requesting STATUS")
@@ -321,10 +255,7 @@ def main():
             drain_tm(sock, oid, WAIT_AFTER_CMD_S)
 
         elif cmd == "listen":
-            try:
-                secs = float(parts[1]) if len(parts) >= 2 else 5.0
-            except ValueError:
-                secs = 5.0
+            secs = float(parts[1]) if len(parts) >= 2 else 5.0
             print(f"Listening for TM for {secs:.1f}s...")
             drain_tm(sock, oid, secs)
 
