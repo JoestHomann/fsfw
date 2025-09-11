@@ -135,7 +135,7 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t,
     case DeviceHandlerMessage::REPLY_RAW_REPLY: {
       // Raw device reply is stored in IPC store. Fetch it, decode, and pack a PUS TM.
       const store_address_t sid = DeviceHandlerMessage::getStoreAddress(reply);
-
+      sif::error << "---- DEBUG ----: 11111" << std::endl;
       const uint8_t* p = nullptr;
       size_t len = 0;
       if (ipcStore == nullptr || ipcStore->getData(sid, &p, &len) != returnvalue::OK) {
@@ -149,7 +149,7 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t,
         const int16_t speed   = static_cast<int16_t>((p[2] << 8) | p[3]);
         const int16_t torque  = static_cast<int16_t>((p[4] << 8) | p[5]);
         const uint8_t running = p[6];
-
+        sif::error << "---- DEBUG ----: 2222222" << std::endl;
         // AppData: [object_id(4) | speed(2) | torque(2) | running(1)]
         uint8_t app[4 + 2 + 2 + 1];
         app[0] = static_cast<uint8_t>((objectId >> 24) & 0xFF);
@@ -170,6 +170,9 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t,
                     << " mNm, running=" << int(running) << std::endl;
           tmHelper.storeAndSendTmPacket();
         }
+        else {
+          sif::error << "---- DEBUG ----:RwPusService: failed to prepare TM_STATUS" << std::endl;
+        }
         // --- END CHANGE ---
 
         rv = CommandingServiceBase::EXECUTION_COMPLETE;
@@ -182,9 +185,12 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t,
 
     case DeviceHandlerMessage::REPLY_RAW_COMMAND:
       // No TM needed for raw command echo; just acknowledge completion.
+      sif::error << "---- DEBUG ----:333333" << std::endl;
       return CommandingServiceBase::EXECUTION_COMPLETE;
 
     default:
+      sif::error << "---- DEBUG ----:444444" << std::endl;
+      sif::error << std::hex << int(reply->getCommand()) << std::dec << std::endl;
       return CommandingServiceBase::INVALID_REPLY;
   }
 }

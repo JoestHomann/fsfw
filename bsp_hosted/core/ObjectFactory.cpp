@@ -142,7 +142,12 @@ rwCmdTask->startTask();
   // ---------------- RwPusService (PUS-220) --------------------
   // If you already have a common TM/TC services task, simply addComponent(rwPus) there.
   constexpr uint16_t RW_PUS_APID = 0x00EF;  // pick an APID suitable for your setup
-  auto* rwPus = new RwPusService(objects::RW_PUS_SERVICE, RW_PUS_APID);
+  auto* rwPus = new RwPusService(objects::RW_PUS_SERVICE,
+                               RW_PUS_APID,
+                               /*serviceId*/ 220,
+                               /*numParallelCommands*/ 4,
+                               /*timeoutSeconds*/ 5);
+
 
   PeriodicTaskIF* pusTask =
       TaskFactory::instance()->createPeriodicTask("PUS_RW_SERVICE", 35, 4096, 0.2, nullptr);
