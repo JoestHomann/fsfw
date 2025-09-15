@@ -4,6 +4,7 @@
 #include "fsfw/returnvalues/returnvalue.h"
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"
+#include "fsfw/action/HasActionsIF.h"
 
 RwCommanderHandler::RwCommanderHandler(object_id_t objectId, object_id_t comIF, CookieIF* cookie)
     : DeviceHandlerBase(objectId, comIF, cookie) {}
@@ -217,9 +218,13 @@ ReturnValue_t RwCommanderHandler::interpretDeviceReply(DeviceCommandId_t id,
     }
     replySet.raw.setValid(true);
 
-    // Forward only if this is the TC reply -> Base will send REPLY_DIRECT_COMMAND_DATA
-    if (id == REPLY_STATUS_TC) {
-      handleDeviceTm(replySet, REPLY_STATUS_TC);
+    // Forward if this is the TC reply OR (one-shot) if a TC-STATUS was requested recently
+    const bool forwardNow =
+        (id == REPLY_STATUS_TC) || (id == REPLY_STATUS_POLL && pendingTcStatusTm);
+
+    if (forwardNow) {
+      handleDeviceTm(replySet, REPLY_STATUS_TC);  // forward as direct-command-data
+      pendingTcStatusTm = false;                  // consume one-shot bridge
     }
     return returnvalue::OK;
   }
@@ -238,17 +243,24 @@ ReturnValue_t RwCommanderHandler::initializeLocalDataPool(localpool::DataPool& l
   return returnvalue::OK;
 }
 
-/*
-// Route action framework calls to our device-command builder.
-// This enables commanding via ActionMessage from RwPusService.
+// Route actions: For STATUS only, mark flags; then delegate to base so the command lifecycle runs.
+// This avoids bypassing the base (which would prevent proper sending & completion).
 ReturnValue_t RwCommanderHandler::executeAction(ActionId_t actionId,
-                                                MessageQueueId_t,
+                                                MessageQueueId_t commandedBy,
                                                 const uint8_t* data,
                                                 size_t size) {
-  // Map actionId 1:1 to our DeviceCommandIds (CMD_SET_SPEED, CMD_STOP, CMD_STATUS)
-  return buildCommandFromCommand(static_cast<DeviceCommandId_t>(actionId), data, size);
+  const auto cmd = static_cast<DeviceCommandId_t>(actionId);
+
+  if (cmd == CMD_STATUS) {
+    // We owe one TM for this TC; also keep polls from racing the reply
+    pendingTcStatusTm = true;
+    lastSentWasPoll   = false;
+    pollSnooze        = POLL_SNOOZE_CYCLES;
+  }
+
+  // Let the base enqueue and drive the command (it will call buildCommandFromCommand)
+  return DeviceHandlerBase::executeAction(actionId, commandedBy, data, size);
 }
-*/
 
 uint8_t RwCommanderHandler::crc8(const uint8_t* data, size_t len) {
   uint8_t crc = 0x00;

@@ -85,7 +85,7 @@ class RwCommanderHandler : public DeviceHandlerBase {
   ReturnValue_t initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
                                         LocalDataPoolManager& poolManager) override;
   
-  //ReturnValue_t executeAction(ActionId_t, MessageQueueId_t, const uint8_t*, size_t) override;
+  ReturnValue_t executeAction(ActionId_t, MessageQueueId_t, const uint8_t*, size_t) override;
 
  private:
   // Helpers
@@ -95,7 +95,7 @@ class RwCommanderHandler : public DeviceHandlerBase {
   uint8_t txBuf[8] = {0};
 
   // Polling control
-  uint8_t  statusPollDivider = 5;  // send STATUS every N handler ticks
+  uint8_t  statusPollDivider = 3;  // send STATUS every N handler ticks
   uint8_t  statusPollCnt     = 0;
   uint32_t warmupCycles      = 1;
   uint32_t warmupCnt         = 0;
@@ -111,4 +111,7 @@ class RwCommanderHandler : public DeviceHandlerBase {
 
   // Dataset instance for direct-reply forwarding
   RwRawReplySet replySet{this};
+
+  // One-shot bridge: forward the next status frame as TC telemetry once a TC STATUS was sent
+  bool pendingTcStatusTm = false;
 };

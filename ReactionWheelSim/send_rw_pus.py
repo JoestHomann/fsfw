@@ -28,8 +28,8 @@ MODE_RAW    = 3
 RW_CMD_HANDLER_OID = 0x00004402
 
 # ---- Receive tuning ----
-SOCKET_TIMEOUT_S   = 0.8   # timeout for a single recv() attempt
-WAIT_AFTER_CMD_S   = 3.0   # total listen window after a command
+SOCKET_TIMEOUT_S   = 9.0   # timeout for a single recv() attempt
+WAIT_AFTER_CMD_S   = 10.0   # total listen window after a command
 
 # ---------- CRC16-CCITT (FALSE): poly 0x1021, init 0xFFFF ----------
 def crc16_ccitt_false(data: bytes, poly=0x1021, init=0xFFFF) -> int:
