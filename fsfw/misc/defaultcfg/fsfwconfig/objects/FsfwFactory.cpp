@@ -10,9 +10,6 @@
 
 #include <cstdint>
 
-// Include mission object IDs so objects::RW_PUS_SERVICE is visible here
-#include "commonObjects.h"
-
 /**
  * This function builds all system objects required for using
  * the FSFW. It is recommended to build all other required objects
@@ -44,8 +41,7 @@ void Factory::setStaticFrameworkObjectIds() {
 	CommandingServiceBase::defaultPacketDestination = objects::NO_OBJECT;
 
 	DeviceHandlerBase::powerSwitcherId = objects::NO_OBJECT;
-	//DeviceHandlerBase::rawDataReceiverId = objects::PUS_SERVICE_2_DEVICE_ACCESS;
-	DeviceHandlerBase::rawDataReceiverId = objects::RW_PUS_SERVICE; // was: PUS_SERVICE_2_DEVICE_ACCESS
+	DeviceHandlerBase::rawDataReceiverId = objects::PUS_SERVICE_2_DEVICE_ACCESS;
 
 	DeviceHandlerFailureIsolation::powerConfirmationId = objects::NO_OBJECT;
 }

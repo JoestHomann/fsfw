@@ -3,10 +3,6 @@
 #include "fsfw/tmtcservices/CommandingServiceBase.h"
 #include "fsfw/storagemanager/StorageManagerIF.h"
 
-// NEW: Accept raw device replies directly in this service
-#include "fsfw/devicehandlers/AcceptsDeviceResponsesIF.h"
-#include "fsfw/ipc/MessageQueueIF.h"
-
 /**
  * Minimal PUS service for a reaction wheel commander.
  * Subservices:
@@ -19,7 +15,7 @@
  *   [0..3]  Destination object ID (big-endian)
  *   [4..]   Subservice-specific payload
  */
-class RwPusService : public CommandingServiceBase, public AcceptsDeviceResponsesIF {
+class RwPusService : public CommandingServiceBase {
  public:
   enum Subservice : uint8_t {
     SET_SPEED = 1,
@@ -33,10 +29,6 @@ class RwPusService : public CommandingServiceBase, public AcceptsDeviceResponses
                uint8_t numParallelCommands = 8, uint16_t commandTimeoutSeconds = 5);
 
   ReturnValue_t initialize() override;
-
-  // AcceptsDeviceResponsesIF: return the queue where device handlers shall send raw replies.
-  // This routes REPLY_RAW_REPLY (and similar) to this service instead of PUS Service 2.
-  MessageQueueId_t getDeviceQueue() override { return commandQueue->getId(); }
 
  protected:
   // CommandingServiceBase hooks

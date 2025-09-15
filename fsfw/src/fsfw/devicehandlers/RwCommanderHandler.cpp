@@ -1,4 +1,4 @@
-#include "fsfw/devicehandlers/RwCommanderHandler.h"
+#include "RwCommanderHandler.h"
 
 #include <cstring>
 #include "fsfw/returnvalues/returnvalue.h"
@@ -24,17 +24,22 @@ void RwCommanderHandler::doShutDown() {
 }
 
 ReturnValue_t RwCommanderHandler::performOperation(uint8_t opCode) {
+  //sif::info << "RwCommanderHandler: performOperation opcode=" << int(opCode) << std::endl; // proves PST tick
   return DeviceHandlerBase::performOperation(opCode);
 }
 
 void RwCommanderHandler::modeChanged() {
-  Mode_t m{}; Submode_t s{};
+  Mode_t m{};
+  Submode_t s{};
   this->getMode(&m, &s);  // FSFW: pointer-based getter
   sif::info << "RwCommanderHandler: modeChanged -> " << static_cast<int>(m)
             << " (sub=" << static_cast<int>(s) << ")" << std::endl;
 }
 
 ReturnValue_t RwCommanderHandler::buildNormalDeviceCommand(DeviceCommandId_t* id) {
+  // DEBUG: proves the task calls into our handler
+  //sif::info << "RwCommanderHandler: tick" << std::endl;
+
   // Give the USB CDC device a tiny grace period after open/reset
   if (warmupCnt < warmupCycles) {
     ++warmupCnt;
@@ -53,9 +58,7 @@ ReturnValue_t RwCommanderHandler::buildNormalDeviceCommand(DeviceCommandId_t* id
 
     rawPacket    = txBuf;
     rawPacketLen = 5;
-
-    // Use the same command ID that is configured in the reply map
-    *id = CMD_STATUS;
+    *id          = CMD_STATUS_POLL;
 
 #if FSFW_CPP_OSTREAM_ENABLED == 1
     sif::info << "RwCommanderHandler: sending raw ["
@@ -77,6 +80,14 @@ ReturnValue_t RwCommanderHandler::buildTransitionDeviceCommand(DeviceCommandId_t
   *id = DeviceHandlerIF::NO_COMMAND_ID;
   return returnvalue::OK;
 }
+/*
+ReturnValue_t RwCommanderHandler::executeAction(ActionId_t actionId,
+                                                MessageQueueId_t,
+                                                const uint8_t* data, size_t size) {
+   
+  return buildCommandFromCommand(static_cast<DeviceCommandId_t>(actionId), data, size);
+}
+*/
 
 ReturnValue_t RwCommanderHandler::buildCommandFromCommand(DeviceCommandId_t deviceCommand,
                                                           const uint8_t* data, size_t len) {
@@ -86,7 +97,8 @@ ReturnValue_t RwCommanderHandler::buildCommandFromCommand(DeviceCommandId_t devi
       if (len >= sizeof(int16_t)) {
         std::memcpy(&rpm, data, sizeof(int16_t));  // payload from IPC store
       } else if (len >= sizeof(float)) {
-        float f; std::memcpy(&f, data, sizeof(float));
+        float f;
+        std::memcpy(&f, data, sizeof(float));
         rpm = static_cast<int16_t>(f);
       }
       lastTargetRpm = rpm;
@@ -138,28 +150,37 @@ ReturnValue_t RwCommanderHandler::buildCommandFromCommand(DeviceCommandId_t devi
 }
 
 void RwCommanderHandler::fillCommandAndReplyMap() {
-  // Non-status commands (no reply expected)
   insertInCommandMap(CMD_SET_SPEED, false, 0);
   insertInCommandMap(CMD_STOP,      false, 0);
 
-  // Status (both on-demand and periodic use the SAME command ID)
-  // -> Forward 8 raw bytes to rawDataReceiver (RwPusService)
   insertInCommandAndReplyMap(
-      /*deviceCommand*/       CMD_STATUS,
-      /*maxDelayCycles*/      5,
-      /*replyDataSet*/        nullptr,  // raw reply path
-      /*replyLen*/            8,        // AB id spdH spdL torH torL run crc
-      /*periodic*/            false,
-      /*hasDifferentReplyId*/ false,
-      /*replyId*/             0,
-      /*countdown*/           nullptr);
+      /*deviceCommand*/          CMD_STATUS,
+      /*maxDelayCycles*/         5,
+      /*replyDataSet*/           nullptr,
+      /*replyLen*/               8,           
+      /*periodic*/               false,
+      /*hasDifferentReplyId*/    true,        
+      /*replyId*/                REPLY_STATUS,
+      /*countdown*/              nullptr);
+
+  insertInCommandAndReplyMap(
+      /*deviceCommand*/          CMD_STATUS_POLL,
+      /*maxDelayCycles*/         5,
+      /*replyDataSet*/           nullptr,
+      /*replyLen*/               8,           
+      /*periodic*/               false,
+      /*hasDifferentReplyId*/    true,        
+      /*replyId*/                REPLY_STATUS,
+      /*countdown*/              nullptr);
 
   sif::info << "RwCommanderHandler: command/reply map set up." << std::endl;
 }
 
 ReturnValue_t RwCommanderHandler::scanForReply(const uint8_t* start, size_t len,
                                                DeviceCommandId_t* foundId, size_t* foundLen) {
-  // ---- DEBUG ----
+                                            
+  
+  // ------ DEBUG BEGIN -----
   sif::info << "RW: scanForReply len=" << len;
   if (len >= 1) {
     sif::info << " first=[" << std::hex << int(start[0])
@@ -169,15 +190,14 @@ ReturnValue_t RwCommanderHandler::scanForReply(const uint8_t* start, size_t len,
   } else {
     sif::info << std::endl;
   }
-  // --------------
+  // ------ DEBUG END -----
 
   if (len < 8) return returnvalue::FAILED;
   if (start[0] != START_BYTE_REPLY) return returnvalue::FAILED;
   if (crc8(start, 7) != start[7])   return returnvalue::FAILED;
 
-  // Report the *command ID* which we used to send the request.
   if (start[1] == REPLY_STATUS) {
-    *foundId  = CMD_STATUS;
+    *foundId  = REPLY_STATUS;
     *foundLen = 8;
     return returnvalue::OK;
   }
@@ -186,27 +206,23 @@ ReturnValue_t RwCommanderHandler::scanForReply(const uint8_t* start, size_t len,
 
 ReturnValue_t RwCommanderHandler::interpretDeviceReply(DeviceCommandId_t id,
                                                        const uint8_t* packet) {
-  if (id == CMD_STATUS) {
+  if (id == REPLY_STATUS) {
     const int16_t speed   = static_cast<int16_t>((packet[2] << 8) | packet[3]);
     const int16_t torque  = static_cast<int16_t>((packet[4] << 8) | packet[5]);
     const uint8_t running = packet[6];
 
-    // Optional local log
     sif::info << "RW STATUS: speed=" << speed
               << " RPM, torque=" << torque
               << " mNm, running=" << int(running) << std::endl;
 
-    // FORWARD the raw 8 bytes to the registered rawDataReceiver (RwPusService),
-    // so that TM 220/130 can be generated there.
-    replyRawData(packet, 8, CMD_STATUS);
-
+    
     return returnvalue::OK;
   }
   return returnvalue::FAILED;
 }
 
 // Give the state machine time between mode transitions so timeouts don't fire immediately.
-uint32_t RwCommanderHandler::getTransitionDelayMs(Mode_t, Mode_t) {
+uint32_t RwCommanderHandler::getTransitionDelayMs(Mode_t /*from*/, Mode_t /*to*/) {
   return 200;  // 200 ms; tune as needed for your setup
 }
 
