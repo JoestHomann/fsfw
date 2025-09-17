@@ -5,6 +5,7 @@
 #include "fsfw/datapoollocal/LocalPoolVector.h"
 #include "fsfw/datapoollocal/LocalDataPoolManager.h"
 #include "fsfw/returnvalues/returnvalue.h"
+#include "fsfw/ipc/MessageQueueIF.h"
 
 class RwCommanderHandler : public DeviceHandlerBase {
  public:
@@ -38,7 +39,6 @@ class RwCommanderHandler : public DeviceHandlerBase {
         // LocalDataSet(hkOwner, setId, maxSizeOfSet)
         : LocalDataSet(owner, DATASET_ID, 1),
           // LocalPoolVector(poolOwnerObjectId, poolId, dataSet)
-          // (RW-Mode ist default, daher kein PoolVariableIF nötig)
           raw(owner->getObjectId(),
               static_cast<lp_id_t>(PoolIds::RAW_REPLY),
               this) {}
@@ -73,22 +73,32 @@ class RwCommanderHandler : public DeviceHandlerBase {
                               const uint8_t* data, size_t size) override;
 
  private:
+  // Compact CRC8 helper (same polynomial as device)
   static uint8_t crc8(const uint8_t* data, size_t len);
 
+  // Compact TX buffer for all commands
   uint8_t txBuf[5] = {};
 
   uint32_t warmupCnt{0};
   static constexpr uint32_t warmupCycles{2};
 
   uint32_t statusPollCnt{0};
-  static constexpr uint32_t statusPollDivider{3};
+  static constexpr uint32_t statusPollDivider{7};  // slower polling for debug
 
   uint32_t pollSnooze{0};
-  static constexpr uint32_t POLL_SNOOZE_CYCLES{3};
+  static constexpr uint32_t POLL_SNOOZE_CYCLES{1};
 
   bool lastSentWasPoll{false};
+
+  // Set to true when a TC STATUS has been issued; next valid frame should produce a DATA_REPLY.
   bool pendingTcStatusTm{false};
 
+  // Queue to route a late TC reply back to the original requester (PUS service).
+  MessageQueueId_t pendingTcStatusReportedTo{MessageQueueIF::NO_QUEUE};
+
   RwReplySet replySet{this};
+
   int16_t lastTargetRpm{0};
+
+  MessageQueueId_t lastReportTo{MessageQueueIF::NO_QUEUE};
 };

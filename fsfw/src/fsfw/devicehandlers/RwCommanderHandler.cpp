@@ -1,22 +1,36 @@
+// RwCommanderHandler.cpp
 #include "RwCommanderHandler.h"
 
 #include <cstring>
+#include <iomanip>      // Debug formatting
+#include <algorithm>    // std::min
 #include "fsfw/returnvalues/returnvalue.h"
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"
 #include "fsfw/action/HasActionsIF.h"
+#include "fsfw/action/ActionHelper.h"  // reportData(...)
 
+// --- small dump helper (debug) ---
+static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
+#if FSFW_CPP_OSTREAM_ENABLED == 1
+  sif::warning << tag << " (" << n << "): ";
+  for (size_t i = 0; i < n; ++i) {
+    sif::warning << std::hex << std::setw(2) << std::setfill('0') << int(p[i]) << " ";
+  }
+  sif::warning << std::dec << std::endl;
+#else
+  (void)tag; (void)p; (void)n;
+#endif
+}
 
 RwCommanderHandler::RwCommanderHandler(object_id_t objectId, object_id_t comIF, CookieIF* cookie)
     : DeviceHandlerBase(objectId, comIF, cookie) {}
 
 void RwCommanderHandler::doStartUp() {
-  // Give device a brief warm-up if you want
   if (warmupCnt < warmupCycles) {
     ++warmupCnt;
-    return; // stay in transition
+    return;
   }
-  // Enter NORMAL so buildNormalDeviceCommand() is called periodically
   setMode(MODE_NORMAL);
 }
 
@@ -26,26 +40,40 @@ void RwCommanderHandler::doShutDown() {
 }
 
 ReturnValue_t RwCommanderHandler::performOperation(uint8_t opCode) {
-  // Let base do its state machine
   return DeviceHandlerBase::performOperation(opCode);
 }
 
 void RwCommanderHandler::modeChanged() {
   Mode_t m{}; Submode_t s{};
-  this->getMode(&m, &s);  // FSFW: pointer-based getter
+  this->getMode(&m, &s);
   sif::info << "RwCommanderHandler: modeChanged -> " << static_cast<int>(m)
             << " (sub=" << static_cast<int>(s) << ")" << std::endl;
 }
 
 ReturnValue_t RwCommanderHandler::buildNormalDeviceCommand(DeviceCommandId_t* id) {
-  // Skip polls for a short window after external TCs so their replies are not interleaved
+  // Extended visibility at every PST tick
+  /*sif::warning << "buildNormalDeviceCommand: cnt=" << statusPollCnt
+               << "/" << statusPollDivider
+               << " pollSnooze=" << pollSnooze
+               << " lastSentWasPoll=" << int(lastSentWasPoll)
+               << " tcStatusPending=" << int(pendingTcStatusTm)
+               << " reportTo=0x" << std::hex << pendingTcStatusReportedTo << std::dec
+               << std::endl;*/
+
   if (pollSnooze > 0) {
     --pollSnooze;
+    sif::warning << "buildNormalDeviceCommand: pollSnooze>0 -> NO_COMMAND (snooze left="
+                 << pollSnooze << ")" << std::endl;
     *id = DeviceHandlerIF::NO_COMMAND_ID;
     return NOTHING_TO_SEND;
   }
 
-  // Periodic poll
+  // If a TC-STATUS is pending, do not skip forever: the TC path will trigger an immediate poll
+  // via executeAction() (statusPollCnt forced below). Here we still respect divider, but log.
+  if (pendingTcStatusTm) {
+    sif::warning << "buildNormalDeviceCommand: tcStatusPending=true" << std::endl;
+  }
+
   if (++statusPollCnt >= statusPollDivider) {
     statusPollCnt = 0;
 
@@ -61,13 +89,12 @@ ReturnValue_t RwCommanderHandler::buildNormalDeviceCommand(DeviceCommandId_t* id
 
     lastSentWasPoll = true;
 
-#if FSFW_CPP_OSTREAM_ENABLED == 1
+    dumpHexWarn("DH TX (poll frame)", txBuf, 5);
     sif::info << "RwCommanderHandler: periodic STATUS" << std::endl;
-#endif
     return returnvalue::OK;
   }
 
-  // Nothing to send this cycle
+  sif::warning << "buildNormalDeviceCommand: below divider -> NO_COMMAND" << std::endl;
   *id = DeviceHandlerIF::NO_COMMAND_ID;
   return NOTHING_TO_SEND;
 }
@@ -81,8 +108,8 @@ ReturnValue_t RwCommanderHandler::buildCommandFromCommand(DeviceCommandId_t devi
                                                           const uint8_t* data, size_t len) {
   switch (deviceCommand) {
     case CMD_SET_SPEED: {
-      // RPM arrives as native int16_t from IPC store
       if (len < sizeof(int16_t)) {
+        sif::warning << "buildCommandFromCommand: SET_SPEED invalid len=" << len << std::endl;
         return returnvalue::FAILED;
       }
       int16_t rpm = 0;
@@ -100,8 +127,9 @@ ReturnValue_t RwCommanderHandler::buildCommandFromCommand(DeviceCommandId_t devi
       rawPacketLen = 5;
 
       lastSentWasPoll = false;
-      pollSnooze = POLL_SNOOZE_CYCLES;
+      pollSnooze      = POLL_SNOOZE_CYCLES;
 
+      dumpHexWarn("DH TX (TC frame: SET_SPEED)", txBuf, 5);
       sif::info << "RwCommanderHandler: SET_SPEED " << rpm << " RPM" << std::endl;
       return returnvalue::OK;
     }
@@ -117,8 +145,9 @@ ReturnValue_t RwCommanderHandler::buildCommandFromCommand(DeviceCommandId_t devi
       rawPacketLen = 5;
 
       lastSentWasPoll = false;
-      pollSnooze = POLL_SNOOZE_CYCLES;
+      pollSnooze      = POLL_SNOOZE_CYCLES;
 
+      dumpHexWarn("DH TX (TC frame: STOP)", txBuf, 5);
       sif::info << "RwCommanderHandler: STOP" << std::endl;
       return returnvalue::OK;
     }
@@ -134,8 +163,9 @@ ReturnValue_t RwCommanderHandler::buildCommandFromCommand(DeviceCommandId_t devi
       rawPacketLen = 5;
 
       lastSentWasPoll = false;
-      pollSnooze = POLL_SNOOZE_CYCLES;
+      pollSnooze      = POLL_SNOOZE_CYCLES;
 
+      dumpHexWarn("DH TX (TC frame: STATUS)", txBuf, 5);
       sif::info << "RwCommanderHandler: STATUS (TC)" << std::endl;
       return returnvalue::OK;
     }
@@ -156,30 +186,26 @@ void RwCommanderHandler::fillCommandAndReplyMap() {
   insertInCommandAndReplyMap(
       /*deviceCommand*/       CMD_STATUS_POLL,
       /*maxDelayCycles*/      5,
-      /*replyDataSet*/        &replySet,   // ok; will not be forwarded
+      /*replyDataSet*/        &replySet,
       /*replyLen*/            8,
       /*periodic*/            false,
       /*hasDifferentReplyId*/ true,
       /*replyId*/             REPLY_STATUS_POLL,
       /*countdown*/           nullptr);
 
-  // TC STATUS mapping (will be forwarded as DATA_REPLY)
-  insertInCommandAndReplyMap(
-      /*deviceCommand*/       CMD_STATUS,
-      /*maxDelayCycles*/      5,
-      /*replyDataSet*/        &replySet,   // required for REPLY_DIRECT_COMMAND_DATA (DATA_REPLY)
-      /*replyLen*/            0,           // length comes from dataset serialization
-      /*periodic*/            false,
-      /*hasDifferentReplyId*/ true,
-      /*replyId*/             REPLY_STATUS_TC,
-      /*countdown*/           nullptr);
+  // IMPORTANT: no direct-reply mapping for CMD_STATUS(TC); we will always push DATA_REPLY ourselves
+  insertInCommandMap(CMD_STATUS, false, 0);
 
   sif::info << "RwCommanderHandler: command/reply map set up." << std::endl;
 }
 
-
 ReturnValue_t RwCommanderHandler::scanForReply(const uint8_t* start, size_t len,
                                                DeviceCommandId_t* foundId, size_t* foundLen) {
+  sif::warning << "scanForReply: len=" << len << std::endl;
+  if (len > 0) {
+    dumpHexWarn("scanForReply: head bytes", start, std::min(len, size_t(16)));
+  }
+
   // Expect 8-byte frame: AB 10 <spdH spdL> <torH torL> <running> <crc>
   if (len < 8) {
     return returnvalue::FAILED;
@@ -187,25 +213,44 @@ ReturnValue_t RwCommanderHandler::scanForReply(const uint8_t* start, size_t len,
   if (start[0] != START_BYTE_REPLY) {
     return returnvalue::FAILED;
   }
-  // 0x10 is the on-wire reply discriminator
   if (start[1] != REPLY_STATUS_WIRE) {
     return returnvalue::FAILED;
   }
-  // Verify simple CRC8 over first 7 bytes
   if (crc8(start, 7) != start[7]) {
+    sif::warning << "scanForReply: CRC mismatch exp=" << int(crc8(start,7))
+                 << " got=" << int(start[7]) << std::endl;
     return returnvalue::FAILED;
   }
 
-  // Demultiplex: decide whether this belongs to a poll or to a TC
   *foundId  = (lastSentWasPoll ? REPLY_STATUS_POLL : REPLY_STATUS_TC);
   *foundLen = 8;
+
+  sif::warning << "scanForReply: MATCH wireId=0x" << std::hex << int(start[1])
+               << " lastSentWasPoll=" << std::dec << int(lastSentWasPoll)
+               << " -> foundId=0x" << std::hex
+               << int(lastSentWasPoll ? REPLY_STATUS_POLL : REPLY_STATUS_TC)
+               << std::dec << " foundLen=" << *foundLen << std::endl;
+
+  sif::warning << "scanForReply: classify=" << (lastSentWasPoll ? "POLL" : "TC")
+               << " | flags{tcPending=" << int(pendingTcStatusTm)
+               << ", lastSentWasPoll=" << int(lastSentWasPoll) << "}" << std::endl;
+
+  dumpHexWarn("scanForReply: matched frame", start, 8);
+
   return returnvalue::OK;
 }
 
 ReturnValue_t RwCommanderHandler::interpretDeviceReply(DeviceCommandId_t id,
                                                        const uint8_t* packet) {
   if (id == REPLY_STATUS_TC || id == REPLY_STATUS_POLL) {
-    // Decode for logging
+    dumpHexWarn("interpretDeviceReply: frame", packet, 8);
+    sif::warning << "interpretDeviceReply: id=0x" << std::hex << int(id)
+                 << " (TC? " << std::dec << (id == REPLY_STATUS_TC) << ")" << std::endl;
+
+    sif::warning << "interpretDeviceReply: flags{tcPending=" << int(pendingTcStatusTm)
+                 << ", lastSentWasPoll=" << int(lastSentWasPoll)
+                 << "}" << std::endl;
+
     const int16_t speed   = static_cast<int16_t>((packet[2] << 8) | packet[3]);
     const int16_t torque  = static_cast<int16_t>((packet[4] << 8) | packet[5]);
     const uint8_t running = packet[6];
@@ -215,60 +260,88 @@ ReturnValue_t RwCommanderHandler::interpretDeviceReply(DeviceCommandId_t id,
               << " mNm, running=" << int(running)
               << (id == REPLY_STATUS_POLL ? " [poll]" : " [tc]") << std::endl;
 
-    // ---- Fill dataset so the base can serialize it into the store ----
-    // Write the raw 8-byte device frame into the LocalPoolVector.
+    // Update local dataset (useful for HK / debugging)
     for (size_t i = 0; i < 8; ++i) {
       replySet.raw[i] = packet[i];
     }
-    // Mark the variable valid and the dataset valid
     replySet.raw.setValid(true);
-    replySet.setValidity(true, true);  // <== important: mark dataset valid/changed
+    replySet.setValidity(true, true);
+    sif::warning << "interpretDeviceReply: replySet.raw valid=" << replySet.raw.isValid()
+                 << " dataset validity set (true)" << std::endl;
 
-    if (id == REPLY_STATUS_TC) {
-      // Preferred: FSFW-official direct reply via dataset
-      handleDeviceTm(replySet, REPLY_STATUS_TC);
+    // Treat as TC context if reply belongs to TC *or* a TC is pending (late TC during poll)
+    const bool isTcContext = (id == REPLY_STATUS_TC) || pendingTcStatusTm;
 
-      // ---- Optional fallback: also push a raw direct reply with the same payload. ----
-      // This guarantees we see something on the PUS side even if dataset serialization is empty.
-      // You can keep this while debugging and remove later if not needed.
-      handleDeviceTm(packet, 8, REPLY_STATUS_TC);
+    if (isTcContext) {
+      if (pendingTcStatusReportedTo == MessageQueueIF::NO_QUEUE) {
+        sif::warning << "interpretDeviceReply: reportTo queue unknown; cannot send DATA_REPLY"
+                     << std::endl;
+      } else {
+        ReturnValue_t rv = actionHelper.reportData(
+            pendingTcStatusReportedTo, CMD_STATUS, packet, 8, /*append*/ false);
+        if (rv != returnvalue::OK) {
+          sif::warning << "interpretDeviceReply: reportData(CMD_STATUS) failed rv=" << rv
+                       << " q=0x" << std::hex << pendingTcStatusReportedTo << std::dec
+                       << std::endl;
+        } else {
+          sif::warning << "interpretDeviceReply: reportData(CMD_STATUS) sent to q=0x"
+                       << std::hex << pendingTcStatusReportedTo << std::dec << std::endl;
+        }
+      }
+
+      // Clear TC context flags after reporting
+      pendingTcStatusTm         = false;
+      pendingTcStatusReportedTo = MessageQueueIF::NO_QUEUE;
     }
 
     return returnvalue::OK;
   }
 
+  sif::warning << "interpretDeviceReply: unexpected id=0x" << std::hex << int(id) << std::dec
+               << " -> FAILED" << std::endl;
   return returnvalue::FAILED;
 }
 
-
-// Give the state machine time between mode transitions so timeouts don't fire immediately.
 uint32_t RwCommanderHandler::getTransitionDelayMs(Mode_t /*from*/, Mode_t /*to*/) {
-  return 6000;  // 6000 ms; tune as needed for your setup
+  return 6000;
 }
 
 ReturnValue_t RwCommanderHandler::initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
                                                           LocalDataPoolManager&) {
-  // Backing entry for LocalPoolVector<uint8_t,8> in the dataset
+  // Backing entry for LocalPoolVector<uint8_t,8> in dataset
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::RAW_REPLY), new PoolEntry<uint8_t>(8));
   return returnvalue::OK;
 }
 
-// Route actions: For STATUS only, mark flags; then delegate to base so the command lifecycle runs.
-// This avoids bypassing the base (which would prevent proper sending & completion).
 ReturnValue_t RwCommanderHandler::executeAction(ActionId_t actionId,
                                                 MessageQueueId_t commandedBy,
                                                 const uint8_t* data,
                                                 size_t size) {
+  sif::warning << "executeAction: actionId=0x" << std::hex << int(actionId)
+               << " size=" << std::dec << size
+               << " commandedBy=0x" << std::hex << commandedBy << std::dec << std::endl;
+
   const auto cmd = static_cast<DeviceCommandId_t>(actionId);
 
   if (cmd == CMD_STATUS) {
-    // We owe one TM for this TC; also keep polls from racing the reply
-    pendingTcStatusTm = true;
-    lastSentWasPoll   = false;
-    pollSnooze        = POLL_SNOOZE_CYCLES;
+    // Remember requester so a (late or immediate) TC reply can be routed back correctly
+    pendingTcStatusTm         = true;
+    pendingTcStatusReportedTo = commandedBy;
+    lastSentWasPoll           = false;
+    pollSnooze                = POLL_SNOOZE_CYCLES;
+
+    // Force the very next normal cycle to issue a poll (accelerate TC answer)
+    if (statusPollDivider > 0) {
+      statusPollCnt = statusPollDivider - 1;
+    }
+
+    sif::warning << "executeAction: CMD_STATUS -> lastSentWasPoll=false, pollSnooze="
+                 << POLL_SNOOZE_CYCLES << " reportTo=0x"
+                 << std::hex << pendingTcStatusReportedTo << std::dec
+                 << " forceNextPoll=true (cnt=" << statusPollCnt << "/" << statusPollDivider << ")"
+                 << std::endl;
   }
 
-  // Let the base enqueue and drive the command (it will call buildCommandFromCommand)
   return DeviceHandlerBase::executeAction(actionId, commandedBy, data, size);
 }
 

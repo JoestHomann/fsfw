@@ -47,4 +47,7 @@ class RwPusService : public CommandingServiceBase {
 
  private:
   StorageManagerIF* ipcStore = nullptr;
+  StorageManagerIF* tmStore  = nullptr;
+  StorageManagerIF* tcStore  = nullptr;
+
 };

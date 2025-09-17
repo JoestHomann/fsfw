@@ -100,7 +100,7 @@ void ObjectFactory::produce(void* args) {
 
   // ---------------- rwCommanderHandler ------------------------
   // --- JH: RwCommanderHandler (minimal serial commander)
-(void) new SerialComIF(objects::RW_CMD_SERIAL_COM_IF);  // SystemObject registriert sich selbst
+(void) new SerialComIF(objects::RW_CMD_SERIAL_COM_IF);  // SystemObject registers itself
 
 auto* rwCmdCookie = new SerialCookie(
     objects::RW_CMD_HANDLER,
