@@ -116,28 +116,6 @@ auto* rwCmdHandler =
     new RwCommanderHandler(objects::RW_CMD_HANDLER,
                            objects::RW_CMD_SERIAL_COM_IF,
                            rwCmdCookie);
-/*
-// --- JH: FDIR-Objekt einfach erzeugen (Owner = dein Handler) ---
-new DeviceHandlerFailureIsolation(objects::RW_CMD_HANDLER, objects::NO_OBJECT);
-
-// Task anlegen und starten
-auto* rwCmdTask =
-    TaskFactory::instance()->createPeriodicTask("RW_CMD_TASK", 40, 4096, 0.2, nullptr);
-rwCmdTask->addComponent(rwCmdHandler);
-rwCmdTask->startTask();
-// -----------------------------------------------------------------
-*/
-/*
-{
-  CommandMessage mm;
-  // switch to NORMAL so buildNormalDeviceCommand() runs periodically
-  ModeMessage::setModeMessage(&mm, ModeMessage::CMD_MODE_COMMAND,
-                              DeviceHandlerIF::MODE_NORMAL, 0);
-  auto* tmp = QueueFactory::instance()->createMessageQueue(
-      1, CommandMessage::MAX_MESSAGE_SIZE);
-  tmp->sendMessage(rwCmdHandler->getCommandQueue(), &mm);
-}
-*/
 
   // ---------------- RwPusService (PUS-220) --------------------
   // If you already have a common TM/TC services task, simply addComponent(rwPus) there.

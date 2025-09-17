@@ -6,6 +6,7 @@
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"
 #include "fsfw/action/HasActionsIF.h"
 
+
 RwCommanderHandler::RwCommanderHandler(object_id_t objectId, object_id_t comIF, CookieIF* cookie)
     : DeviceHandlerBase(objectId, comIF, cookie) {}
 
@@ -151,23 +152,23 @@ void RwCommanderHandler::fillCommandAndReplyMap() {
   insertInCommandMap(CMD_SET_SPEED, false, 0);
   insertInCommandMap(CMD_STOP,      false, 0);
 
-  // Poll mapping (virtual reply id) to keep parsing/scan active.
+  // Poll mapping (no forwarding)
   insertInCommandAndReplyMap(
       /*deviceCommand*/       CMD_STATUS_POLL,
       /*maxDelayCycles*/      5,
-      /*replyDataSet*/        &replySet,   // dataset ok; won't be forwarded
+      /*replyDataSet*/        &replySet,   // ok; will not be forwarded
       /*replyLen*/            8,
       /*periodic*/            false,
       /*hasDifferentReplyId*/ true,
       /*replyId*/             REPLY_STATUS_POLL,
       /*countdown*/           nullptr);
 
-  // TC STATUS mapping with dataset -> will be forwarded to the commander
+  // TC STATUS mapping (will be forwarded as DATA_REPLY)
   insertInCommandAndReplyMap(
       /*deviceCommand*/       CMD_STATUS,
       /*maxDelayCycles*/      5,
-      /*replyDataSet*/        &replySet,   // required for REPLY_DIRECT_COMMAND_DATA
-      /*replyLen*/            8,
+      /*replyDataSet*/        &replySet,   // required for REPLY_DIRECT_COMMAND_DATA (DATA_REPLY)
+      /*replyLen*/            0,           // length comes from dataset serialization
       /*periodic*/            false,
       /*hasDifferentReplyId*/ true,
       /*replyId*/             REPLY_STATUS_TC,
@@ -175,6 +176,7 @@ void RwCommanderHandler::fillCommandAndReplyMap() {
 
   sif::info << "RwCommanderHandler: command/reply map set up." << std::endl;
 }
+
 
 ReturnValue_t RwCommanderHandler::scanForReply(const uint8_t* start, size_t len,
                                                DeviceCommandId_t* foundId, size_t* foundLen) {
@@ -203,6 +205,7 @@ ReturnValue_t RwCommanderHandler::scanForReply(const uint8_t* start, size_t len,
 ReturnValue_t RwCommanderHandler::interpretDeviceReply(DeviceCommandId_t id,
                                                        const uint8_t* packet) {
   if (id == REPLY_STATUS_TC || id == REPLY_STATUS_POLL) {
+    // Decode for logging
     const int16_t speed   = static_cast<int16_t>((packet[2] << 8) | packet[3]);
     const int16_t torque  = static_cast<int16_t>((packet[4] << 8) | packet[5]);
     const uint8_t running = packet[6];
@@ -212,28 +215,35 @@ ReturnValue_t RwCommanderHandler::interpretDeviceReply(DeviceCommandId_t id,
               << " mNm, running=" << int(running)
               << (id == REPLY_STATUS_POLL ? " [poll]" : " [tc]") << std::endl;
 
-    // Fill dataset with raw 8-byte frame
+    // ---- Fill dataset so the base can serialize it into the store ----
+    // Write the raw 8-byte device frame into the LocalPoolVector.
     for (size_t i = 0; i < 8; ++i) {
       replySet.raw[i] = packet[i];
     }
+    // Mark the variable valid and the dataset valid
     replySet.raw.setValid(true);
+    replySet.setValidity(true, true);  // <== important: mark dataset valid/changed
 
-    // Forward if this is the TC reply OR (one-shot) if a TC-STATUS was requested recently
-    const bool forwardNow =
-        (id == REPLY_STATUS_TC) || (id == REPLY_STATUS_POLL && pendingTcStatusTm);
+    if (id == REPLY_STATUS_TC) {
+      // Preferred: FSFW-official direct reply via dataset
+      handleDeviceTm(replySet, REPLY_STATUS_TC);
 
-    if (forwardNow) {
-      handleDeviceTm(replySet, REPLY_STATUS_TC);  // forward as direct-command-data
-      pendingTcStatusTm = false;                  // consume one-shot bridge
+      // ---- Optional fallback: also push a raw direct reply with the same payload. ----
+      // This guarantees we see something on the PUS side even if dataset serialization is empty.
+      // You can keep this while debugging and remove later if not needed.
+      handleDeviceTm(packet, 8, REPLY_STATUS_TC);
     }
+
     return returnvalue::OK;
   }
+
   return returnvalue::FAILED;
 }
 
+
 // Give the state machine time between mode transitions so timeouts don't fire immediately.
 uint32_t RwCommanderHandler::getTransitionDelayMs(Mode_t /*from*/, Mode_t /*to*/) {
-  return 200;  // 200 ms; tune as needed for your setup
+  return 6000;  // 6000 ms; tune as needed for your setup
 }
 
 ReturnValue_t RwCommanderHandler::initializeLocalDataPool(localpool::DataPool& localDataPoolMap,

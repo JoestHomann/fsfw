@@ -122,89 +122,115 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
 }
 
 // --- RwPusService::handleReply (build TM with tmHelper, service=220 is implicit) ---
-ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t previousCommand,
+ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t /*previousCommand*/,
                                         uint32_t* /*state*/, CommandMessage* /*next*/,
                                         object_id_t objectId, bool* isStep) {
-  // Trace incoming replies from the device handler
+  // Trace reply opcode
   sif::info << "RwPusService::handleReply cmd=0x" << std::hex << int(reply->getCommand())
             << std::dec << std::endl;
 
+  // --- Action framework housekeeping ---
   switch (reply->getCommand()) {
-    // --- Action / Commanding framework housekeeping ---
-    case ActionMessage::STEP_SUCCESS: {
-      *isStep = true;
-      return returnvalue::OK;
-    }
-    case ActionMessage::STEP_FAILED: {
-      *isStep = true;
-      return ActionMessage::getReturnCode(reply);
-    }
-    case ActionMessage::COMPLETION_SUCCESS: {
-      return CommandingServiceBase::EXECUTION_COMPLETE;
-    }
-    case ActionMessage::COMPLETION_FAILED: {
-      return ActionMessage::getReturnCode(reply);
-    }
-
-    // --- Direct command data from DeviceHandlerBase (one of these in some FSFW versions) ---
-    case DeviceHandlerMessage::REPLY_DIRECT_COMMAND_DATA:
-    case DeviceHandlerMessage::REPLY_RAW_REPLY: {
-      // Will be handled below by the generic store-carrying handler
-      break; // fall through to generic block after switch
-    }
-
-    default:
-      break; // fall through to generic block
+    case ActionMessage::STEP_SUCCESS:    *isStep = true; return returnvalue::OK;
+    case ActionMessage::STEP_FAILED:     *isStep = true; return ActionMessage::getReturnCode(reply);
+    case ActionMessage::COMPLETION_SUCCESS:            return CommandingServiceBase::EXECUTION_COMPLETE;
+    case ActionMessage::COMPLETION_FAILED:             return ActionMessage::getReturnCode(reply);
+    default: break;
   }
 
-  // --- Generic store-carrying reply handler (robust across FSFW variants) ---
-  {
-    const store_address_t sid = DeviceHandlerMessage::getStoreAddress(reply);
-    if (sid != store_address_t::invalid()) {
-      const uint8_t* p = nullptr;
-      size_t len = 0;
-      if (ipcStore != nullptr && ipcStore->getData(sid, &p, &len) == returnvalue::OK) {
-        ReturnValue_t rv = CommandingServiceBase::INVALID_REPLY;
+  // --- Resolve store address by reply type ---
+  store_address_t sid = store_address_t::invalid();
+  const Command_t cmd = reply->getCommand();
 
-        // Expect AB 0x10 <spdH spdL> <torH torL> <running> <crc>
-        if (len >= 8 && p[0] == 0xAB && p[1] == 0x10) {
-          const int16_t speed = static_cast<int16_t>((p[2] << 8) | p[3]);
-          const int16_t torque = static_cast<int16_t>((p[4] << 8) | p[5]);
-          const uint8_t running = p[6];
+  if (cmd == ActionMessage::DATA_REPLY ||
+      cmd == DeviceHandlerMessage::REPLY_DIRECT_COMMAND_DATA) {
+    // DATA_REPLY path: store id sits in ActionMessage
+    sid = ActionMessage::getStoreId(reply);
+  } else if (cmd == DeviceHandlerMessage::REPLY_RAW_REPLY) {
+    // RAW_REPLY path: store id sits in DeviceHandlerMessage
+    sid = DeviceHandlerMessage::getStoreAddress(reply);
+  }
 
-          // AppData: [object_id(4) | speed(2) | torque(2) | running(1)]
-          uint8_t app[4 + 2 + 2 + 1];
-          app[0] = static_cast<uint8_t>((objectId >> 24) & 0xFF);
-          app[1] = static_cast<uint8_t>((objectId >> 16) & 0xFF);
-          app[2] = static_cast<uint8_t>((objectId >> 8) & 0xFF);
-          app[3] = static_cast<uint8_t>(objectId & 0xFF);
-          app[4] = static_cast<uint8_t>((speed >> 8) & 0xFF);
-          app[5] = static_cast<uint8_t>(speed & 0xFF);
-          app[6] = static_cast<uint8_t>((torque >> 8) & 0xFF);
-          app[7] = static_cast<uint8_t>(torque & 0xFF);
-          app[8] = running;
-
-          if (tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_STATUS), app,
-                                       sizeof(app)) == returnvalue::OK) {
-            sif::info << "RwPusService: sending TM_STATUS (svc=220, sub=130)"
-                      << " speed=" << speed << " rpm, torque=" << torque
-                      << " mNm, running=" << int(running) << std::endl;
-            rv = tmHelper.storeAndSendTmPacket();
-          }
-        }
-
-        // Always delete IPC store data after processing to avoid leaks
-        (void)ipcStore->deleteData(sid);
-
-        // Treat data replies as steps; completion may arrive afterwards
-        *isStep = true;
-        return rv;
-      }
-    }
-
-    // No store-carrying data -> do not escalate to PUS[1,6]
-    sif::warning << "RwPusService: Unhandled reply cmd=0x"
-                 << std::hex << int(reply->getCommand()) << std::dec << std::endl;
+  if (sid == store_address_t::invalid()) {
+    // Not a data-carrying reply; do not escalate to [1,6]
+    sif::warning << "RwPusService: Reply 0x" << std::hex << int(cmd)
+                 << " has no store data. Ignoring." << std::dec << std::endl;
     return returnvalue::OK;
   }
+
+  // --- Pull store payload ---
+  const uint8_t* buf = nullptr;
+  size_t len = 0;
+  if (ipcStore == nullptr || ipcStore->getData(sid, &buf, &len) != returnvalue::OK) {
+    return CommandingServiceBase::INVALID_REPLY;
+  }
+
+  // Tiny hex dump (first up to 24 bytes) to verify content visually
+  {
+    size_t dump = len < 24 ? len : size_t{24};
+    sif::info << "RwPusService: store len=" << len << " head=";
+    for (size_t i = 0; i < dump; ++i) {
+      sif::info << std::hex << (i ? " " : "") << int(buf[i]) << std::dec;
+    }
+    sif::info << std::endl;
+  }
+
+  // --- Find 'AB 10' device frame anywhere in the buffer (dataset-safe) ---
+  auto crc8 = [](const uint8_t* d) -> uint8_t {
+    uint8_t c = 0x00;
+    for (int i = 0; i < 7; ++i) {
+      c ^= d[i];
+      for (int j = 0; j < 8; ++j) {
+        c = (c & 0x80) ? static_cast<uint8_t>((c << 1) ^ 0x07) : static_cast<uint8_t>(c << 1);
+      }
+    }
+    return c;
+  };
+
+  size_t start = SIZE_MAX;
+  // Scan full payload; CRC check filters false positives
+  for (size_t i = 0; i + 8 <= len; ++i) {
+    if (buf[i] == 0xAB && buf[i + 1] == 0x10 && crc8(buf + i) == buf[i + 7]) {
+      start = i;
+      break;
+    }
+  }
+
+  ReturnValue_t rv = CommandingServiceBase::INVALID_REPLY;
+
+  if (start != SIZE_MAX) {
+    const uint8_t* p = buf + start;
+    const int16_t speed   = static_cast<int16_t>((p[2] << 8) | p[3]);
+    const int16_t torque  = static_cast<int16_t>((p[4] << 8) | p[5]);
+    const uint8_t running = p[6];
+
+    // Build AppData: [object_id(4) | speed(2) | torque(2) | running(1)]
+    uint8_t app[4 + 2 + 2 + 1];
+    app[0] = static_cast<uint8_t>((objectId >> 24) & 0xFF);
+    app[1] = static_cast<uint8_t>((objectId >> 16) & 0xFF);
+    app[2] = static_cast<uint8_t>((objectId >> 8) & 0xFF);
+    app[3] = static_cast<uint8_t>(objectId & 0xFF);
+    app[4] = static_cast<uint8_t>((speed >> 8) & 0xFF);
+    app[5] = static_cast<uint8_t>(speed & 0xFF);
+    app[6] = static_cast<uint8_t>((torque >> 8) & 0xFF);
+    app[7] = static_cast<uint8_t>(torque & 0xFF);
+    app[8] = running;
+
+    if (tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_STATUS), app,
+                                 sizeof(app)) == returnvalue::OK) {
+      sif::info << "RwPusService: sending TM_STATUS (svc=220, sub=130) "
+                << "speed=" << speed << " rpm, torque=" << torque
+                << " mNm, running=" << int(running) << std::endl;
+      rv = tmHelper.storeAndSendTmPacket();
+    }
+  } else {
+    sif::warning << "RwPusService: No 'AB 10' frame found in store payload, ignoring." << std::endl;
+  }
+
+  // Always free IPC store element
+  (void)ipcStore->deleteData(sid);
+
+  *isStep = true;  // data replies are steps; completion may follow
+  return rv;
 }
+
