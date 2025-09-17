@@ -1,4 +1,3 @@
-// RwCommanderHandler.cpp
 #include "RwCommanderHandler.h"
 
 #include <cstring>
@@ -51,15 +50,6 @@ void RwCommanderHandler::modeChanged() {
 }
 
 ReturnValue_t RwCommanderHandler::buildNormalDeviceCommand(DeviceCommandId_t* id) {
-  // Extended visibility at every PST tick
-  /*sif::warning << "buildNormalDeviceCommand: cnt=" << statusPollCnt
-               << "/" << statusPollDivider
-               << " pollSnooze=" << pollSnooze
-               << " lastSentWasPoll=" << int(lastSentWasPoll)
-               << " tcStatusPending=" << int(pendingTcStatusTm)
-               << " reportTo=0x" << std::hex << pendingTcStatusReportedTo << std::dec
-               << std::endl;*/
-
   if (pollSnooze > 0) {
     --pollSnooze;
     sif::warning << "buildNormalDeviceCommand: pollSnooze>0 -> NO_COMMAND (snooze left="
@@ -68,10 +58,26 @@ ReturnValue_t RwCommanderHandler::buildNormalDeviceCommand(DeviceCommandId_t* id
     return NOTHING_TO_SEND;
   }
 
-  // If a TC-STATUS is pending, do not skip forever: the TC path will trigger an immediate poll
-  // via executeAction() (statusPollCnt forced below). Here we still respect divider, but log.
+  // Wenn ein TC-STATUS outstanding ist, poll sofort (damit der späte Frame zügig kommt)
   if (pendingTcStatusTm) {
     sif::warning << "buildNormalDeviceCommand: tcStatusPending=true" << std::endl;
+
+    txBuf[0] = START_BYTE_CMD;
+    txBuf[1] = static_cast<uint8_t>(CMD_STATUS);
+    txBuf[2] = 0x00;
+    txBuf[3] = 0x00;
+    txBuf[4] = crc8(txBuf, 4);
+
+    rawPacket    = txBuf;
+    rawPacketLen = 5;
+    *id          = CMD_STATUS_POLL;
+
+    lastSentWasPoll = true;
+
+    dumpHexWarn("DH TX (poll frame)", txBuf, 5);
+    sif::info << "RwCommanderHandler: periodic STATUS" << std::endl;
+    // Zähler bewusst nicht hochzählen, um TC-Flow nicht zu blockieren
+    return returnvalue::OK;
   }
 
   if (++statusPollCnt >= statusPollDivider) {
@@ -109,7 +115,6 @@ ReturnValue_t RwCommanderHandler::buildCommandFromCommand(DeviceCommandId_t devi
   switch (deviceCommand) {
     case CMD_SET_SPEED: {
       if (len < sizeof(int16_t)) {
-        sif::warning << "buildCommandFromCommand: SET_SPEED invalid len=" << len << std::endl;
         return returnvalue::FAILED;
       }
       int16_t rpm = 0;
@@ -193,7 +198,7 @@ void RwCommanderHandler::fillCommandAndReplyMap() {
       /*replyId*/             REPLY_STATUS_POLL,
       /*countdown*/           nullptr);
 
-  // IMPORTANT: no direct-reply mapping for CMD_STATUS(TC); we will always push DATA_REPLY ourselves
+  // Kein direktes Reply für CMD_STATUS (TC); Daten gehen via ActionHelper::reportData(...)
   insertInCommandMap(CMD_STATUS, false, 0);
 
   sif::info << "RwCommanderHandler: command/reply map set up." << std::endl;
@@ -217,8 +222,6 @@ ReturnValue_t RwCommanderHandler::scanForReply(const uint8_t* start, size_t len,
     return returnvalue::FAILED;
   }
   if (crc8(start, 7) != start[7]) {
-    sif::warning << "scanForReply: CRC mismatch exp=" << int(crc8(start,7))
-                 << " got=" << int(start[7]) << std::endl;
     return returnvalue::FAILED;
   }
 
@@ -230,12 +233,14 @@ ReturnValue_t RwCommanderHandler::scanForReply(const uint8_t* start, size_t len,
                << " -> foundId=0x" << std::hex
                << int(lastSentWasPoll ? REPLY_STATUS_POLL : REPLY_STATUS_TC)
                << std::dec << " foundLen=" << *foundLen << std::endl;
-
-  sif::warning << "scanForReply: classify=" << (lastSentWasPoll ? "POLL" : "TC")
-               << " | flags{tcPending=" << int(pendingTcStatusTm)
-               << ", lastSentWasPoll=" << int(lastSentWasPoll) << "}" << std::endl;
-
   dumpHexWarn("scanForReply: matched frame", start, 8);
+
+  // Klassifikation für die Logs
+  sif::warning << "scanForReply: classify="
+               << (lastSentWasPoll ? "POLL" : "TC")
+               << " | flags{tcPending=" << pendingTcStatusTm
+               << ", lastSentWasPoll=" << lastSentWasPoll << "}"
+               << std::endl;
 
   return returnvalue::OK;
 }
@@ -246,10 +251,8 @@ ReturnValue_t RwCommanderHandler::interpretDeviceReply(DeviceCommandId_t id,
     dumpHexWarn("interpretDeviceReply: frame", packet, 8);
     sif::warning << "interpretDeviceReply: id=0x" << std::hex << int(id)
                  << " (TC? " << std::dec << (id == REPLY_STATUS_TC) << ")" << std::endl;
-
-    sif::warning << "interpretDeviceReply: flags{tcPending=" << int(pendingTcStatusTm)
-                 << ", lastSentWasPoll=" << int(lastSentWasPoll)
-                 << "}" << std::endl;
+    sif::warning << "interpretDeviceReply: flags{tcPending=" << pendingTcStatusTm
+                 << ", lastSentWasPoll=" << lastSentWasPoll << "}" << std::endl;
 
     const int16_t speed   = static_cast<int16_t>((packet[2] << 8) | packet[3]);
     const int16_t torque  = static_cast<int16_t>((packet[4] << 8) | packet[5]);
@@ -260,7 +263,7 @@ ReturnValue_t RwCommanderHandler::interpretDeviceReply(DeviceCommandId_t id,
               << " mNm, running=" << int(running)
               << (id == REPLY_STATUS_POLL ? " [poll]" : " [tc]") << std::endl;
 
-    // Update local dataset (useful for HK / debugging)
+    // Update local dataset
     for (size_t i = 0; i < 8; ++i) {
       replySet.raw[i] = packet[i];
     }
@@ -269,10 +272,8 @@ ReturnValue_t RwCommanderHandler::interpretDeviceReply(DeviceCommandId_t id,
     sif::warning << "interpretDeviceReply: replySet.raw valid=" << replySet.raw.isValid()
                  << " dataset validity set (true)" << std::endl;
 
-    // Treat as TC context if reply belongs to TC *or* a TC is pending (late TC during poll)
-    const bool isTcContext = (id == REPLY_STATUS_TC) || pendingTcStatusTm;
-
-    if (isTcContext) {
+    // Wenn ein TC auf Antwort wartet, route DATA_REPLY zurück zum PUS-Dienst
+    if (pendingTcStatusTm) {
       if (pendingTcStatusReportedTo == MessageQueueIF::NO_QUEUE) {
         sif::warning << "interpretDeviceReply: reportTo queue unknown; cannot send DATA_REPLY"
                      << std::endl;
@@ -281,15 +282,13 @@ ReturnValue_t RwCommanderHandler::interpretDeviceReply(DeviceCommandId_t id,
             pendingTcStatusReportedTo, CMD_STATUS, packet, 8, /*append*/ false);
         if (rv != returnvalue::OK) {
           sif::warning << "interpretDeviceReply: reportData(CMD_STATUS) failed rv=" << rv
-                       << " q=0x" << std::hex << pendingTcStatusReportedTo << std::dec
                        << std::endl;
         } else {
           sif::warning << "interpretDeviceReply: reportData(CMD_STATUS) sent to q=0x"
                        << std::hex << pendingTcStatusReportedTo << std::dec << std::endl;
         }
       }
-
-      // Clear TC context flags after reporting
+      // Nach Versand: Flag löschen, Queue zurücksetzen
       pendingTcStatusTm         = false;
       pendingTcStatusReportedTo = MessageQueueIF::NO_QUEUE;
     }
@@ -297,8 +296,6 @@ ReturnValue_t RwCommanderHandler::interpretDeviceReply(DeviceCommandId_t id,
     return returnvalue::OK;
   }
 
-  sif::warning << "interpretDeviceReply: unexpected id=0x" << std::hex << int(id) << std::dec
-               << " -> FAILED" << std::endl;
   return returnvalue::FAILED;
 }
 
@@ -308,7 +305,7 @@ uint32_t RwCommanderHandler::getTransitionDelayMs(Mode_t /*from*/, Mode_t /*to*/
 
 ReturnValue_t RwCommanderHandler::initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
                                                           LocalDataPoolManager&) {
-  // Backing entry for LocalPoolVector<uint8_t,8> in dataset
+  // Backing entry für LocalPoolVector<uint8_t,8> in dataset
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::RAW_REPLY), new PoolEntry<uint8_t>(8));
   return returnvalue::OK;
 }
@@ -324,22 +321,17 @@ ReturnValue_t RwCommanderHandler::executeAction(ActionId_t actionId,
   const auto cmd = static_cast<DeviceCommandId_t>(actionId);
 
   if (cmd == CMD_STATUS) {
-    // Remember requester so a (late or immediate) TC reply can be routed back correctly
+    // Requester merken, Poll kurz snoozen und nächsten Poll forcieren
     pendingTcStatusTm         = true;
     pendingTcStatusReportedTo = commandedBy;
     lastSentWasPoll           = false;
     pollSnooze                = POLL_SNOOZE_CYCLES;
 
-    // Force the very next normal cycle to issue a poll (accelerate TC answer)
-    if (statusPollDivider > 0) {
-      statusPollCnt = statusPollDivider - 1;
-    }
-
     sif::warning << "executeAction: CMD_STATUS -> lastSentWasPoll=false, pollSnooze="
                  << POLL_SNOOZE_CYCLES << " reportTo=0x"
                  << std::hex << pendingTcStatusReportedTo << std::dec
-                 << " forceNextPoll=true (cnt=" << statusPollCnt << "/" << statusPollDivider << ")"
-                 << std::endl;
+                 << " forceNextPoll=true (cnt=" << statusPollCnt << "/" << statusPollDivider
+                 << ")" << std::endl;
   }
 
   return DeviceHandlerBase::executeAction(actionId, commandedBy, data, size);

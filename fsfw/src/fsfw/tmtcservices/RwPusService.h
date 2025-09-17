@@ -45,9 +45,15 @@ class RwPusService : public CommandingServiceBase {
                             uint32_t* state, CommandMessage* next, object_id_t objectId,
                             bool* isStep) override;
 
+  ReturnValue_t handleDataReplyAndEmitTm(store_address_t sid, object_id_t objectId);
+
+  void handleUnrequestedReply(CommandMessage* reply) override;
+
  private:
   StorageManagerIF* ipcStore = nullptr;
   StorageManagerIF* tmStore  = nullptr;
   StorageManagerIF* tcStore  = nullptr;
+
+  object_id_t lastTargetObjectId_{objects::NO_OBJECT};
 
 };
