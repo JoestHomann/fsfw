@@ -368,7 +368,7 @@ ReturnValue_t SerialComIF::handleNoncanonicalRead(SerialCookie& uartCookie,
     return returnvalue::FAILED;
   } else if (bytesRead != static_cast<int>(requestLen)) {
     if (uartCookie.isReplySizeFixed()) {
-#if FSFW_CPP_OSTREAM_ENABLED == 1
+#if FSFW_CPP_OSTREAM_ENABLED == 0 // Disabled (JH)
       sif::warning << "UartComIF::requestReceiveMessage: Only read " << bytesRead << " of "
                    << requestLen << " bytes" << std::endl;
 #endif

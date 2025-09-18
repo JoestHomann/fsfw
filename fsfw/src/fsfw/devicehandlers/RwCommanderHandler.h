@@ -18,13 +18,12 @@ class RwCommanderHandler : public DeviceHandlerBase {
   enum DeviceCmd : DeviceCommandId_t {
     CMD_SET_SPEED   = 0x01,
     CMD_STOP        = 0x02,
-    CMD_STATUS      = 0x03,
-    CMD_STATUS_POLL = 0x1003
+    CMD_STATUS      = 0x03,     // action-driven request (same wire frame)
+    CMD_STATUS_POLL = 0x1003    // device command used for both periodic and TC-driven polls
   };
 
-  // Internal reply IDs
+  // Unified internal reply ID (matches scanForReply classification)
   enum ReplyId : DeviceCommandId_t {
-    REPLY_STATUS_TC   = 0x2001,
     REPLY_STATUS_POLL = 0x2002
   };
 
@@ -34,22 +33,17 @@ class RwCommanderHandler : public DeviceHandlerBase {
 
   struct RwReplySet : public LocalDataSet {
     LocalPoolVector<uint8_t, 8> raw;
-
     explicit RwReplySet(HasLocalDataPoolIF* owner)
-        // LocalDataSet(hkOwner, setId, maxSizeOfSet)
         : LocalDataSet(owner, DATASET_ID, 1),
-          // LocalPoolVector(poolOwnerObjectId, poolId, dataSet)
-          raw(owner->getObjectId(),
-              static_cast<lp_id_t>(PoolIds::RAW_REPLY),
-              this) {}
+          raw(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::RAW_REPLY), this) {}
   };
 
   RwCommanderHandler(object_id_t objectId, object_id_t comIF, CookieIF* cookie);
 
-  void doStartUp() override;
-  void doShutDown() override;
-  ReturnValue_t performOperation(uint8_t opCode) override;
-  void modeChanged() override;
+  // DeviceHandlerBase interface
+  void          doStartUp() override;
+  void          doShutDown() override;
+  void          modeChanged() override;
 
   ReturnValue_t buildNormalDeviceCommand(DeviceCommandId_t* id) override;
   ReturnValue_t buildTransitionDeviceCommand(DeviceCommandId_t* id) override;
@@ -59,50 +53,48 @@ class RwCommanderHandler : public DeviceHandlerBase {
   ReturnValue_t scanForReply(const uint8_t* start, size_t len,
                              DeviceCommandId_t* foundId, size_t* foundLen) override;
 
-  ReturnValue_t interpretDeviceReply(DeviceCommandId_t id,
-                                     const uint8_t* packet) override;
+  ReturnValue_t interpretDeviceReply(DeviceCommandId_t id, const uint8_t* packet) override;
 
-  uint32_t getTransitionDelayMs(Mode_t from, Mode_t to) override;
+  uint32_t      getTransitionDelayMs(Mode_t from, Mode_t to) override;
 
   ReturnValue_t initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
                                         LocalDataPoolManager& poolManager) override;
 
-  void fillCommandAndReplyMap() override;
+  void          fillCommandAndReplyMap() override;
 
   ReturnValue_t executeAction(ActionId_t actionId, MessageQueueId_t commandedBy,
                               const uint8_t* data, size_t size) override;
 
  private:
+  // Drain UART RX quickly in a non-blocking fashion to drop stale bytes
+  ReturnValue_t drainRxNow();
 
- // Drains UART RX quickly in a non-blocking fashion to drop stale bytes
- ReturnValue_t drainRxNow();
-
-  // Compact CRC8 helper (same polynomial as device)
+  // CRC8 helper (same polynomial as device)
   static uint8_t crc8(const uint8_t* data, size_t len);
 
-  // Compact TX buffer for all commands
+  // Compact TX buffer for all commands (STATUS/SET/STOP are 5 bytes)
   uint8_t txBuf[5] = {};
 
-  uint32_t warmupCnt{0};
-  static constexpr uint32_t warmupCycles{2};
+  // Simple warm-up before entering NORMAL
+  uint32_t                    warmupCnt{0};
+  static constexpr uint32_t   warmupCycles{2};
 
-  uint32_t statusPollCnt{0};
-  static constexpr uint32_t statusPollDivider{100};  // slower polling for debug
+  // Periodic polling divider (incremented each PST cycle)
+  uint32_t                    statusPollCnt{0};
+  static constexpr uint32_t   statusPollDivider{100};
 
-  uint32_t pollSnooze{0};
-  static constexpr uint32_t POLL_SNOOZE_CYCLES{1};
+  // Short backoff ticks after TC to avoid immediate re-poll
+  uint32_t                    pollSnooze{0};
 
-  bool lastSentWasPoll{false};
+  // Set true when a TC STATUS has been issued; next valid frame will be routed as DATA_REPLY
+  bool                        pendingTcStatusTm{false};
 
-  // Set to true when a TC STATUS has been issued; next valid frame should produce a DATA_REPLY.
-  bool pendingTcStatusTm{false};
+  // Queue to route a TC data reply back to the requester (PUS service)
+  MessageQueueId_t            pendingTcStatusReportedTo{MessageQueueIF::NO_QUEUE};
 
-  // Queue to route a late TC reply back to the original requester (PUS service).
-  MessageQueueId_t pendingTcStatusReportedTo{MessageQueueIF::NO_QUEUE};
+  // Most recent raw reply (8-byte wire frame)
+  RwReplySet                  replySet{this};
 
-  RwReplySet replySet{this};
-
-  int16_t lastTargetRpm{0};
-
-  MessageQueueId_t lastReportTo{MessageQueueIF::NO_QUEUE};
+  // Last commanded target RPM (for reference/diagnostics)
+  int16_t                     lastTargetRpm{0};
 };
