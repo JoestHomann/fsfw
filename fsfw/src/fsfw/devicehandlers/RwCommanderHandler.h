@@ -83,7 +83,7 @@ class RwCommanderHandler : public DeviceHandlerBase {
   static constexpr uint32_t warmupCycles{2};
 
   uint32_t statusPollCnt{0};
-  static constexpr uint32_t statusPollDivider{7};  // slower polling for debug
+  static constexpr uint32_t statusPollDivider{100};  // slower polling for debug
 
   uint32_t pollSnooze{0};
   static constexpr uint32_t POLL_SNOOZE_CYCLES{1};

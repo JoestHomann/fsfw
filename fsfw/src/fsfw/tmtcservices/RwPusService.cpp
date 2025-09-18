@@ -16,6 +16,7 @@
 #include "fsfw/storagemanager/storeAddress.h"
 
 namespace {
+
 inline uint32_t be32(const uint8_t* p) {
   return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
 }
@@ -44,17 +45,21 @@ int findStatusFrame(const uint8_t* buf, size_t len) {
   return -1;
 }
 
-void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
-#if FSFW_CPP_OSTREAM_ENABLED == 1
+#if defined(RW_VERBOSE)
+static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
+# if FSFW_CPP_OSTREAM_ENABLED == 1
   sif::warning << tag << " (" << n << "): ";
   for (size_t i = 0; i < n; ++i) {
     sif::warning << std::hex << std::setw(2) << std::setfill('0') << int(p[i]) << " ";
   }
   sif::warning << std::dec << std::endl;
-#else
+# else
   (void)tag; (void)p; (void)n;
-#endif
+# endif
 }
+#else
+static inline void dumpHexWarn(const char*, const uint8_t*, size_t) {}
+#endif
 
 const char* cmdName(Command_t c) {
   // DATA_REPLY und DH_DIRECT_DATA können identische Codes haben (je nach FSFW)
@@ -90,6 +95,7 @@ ReturnValue_t RwPusService::initialize() {
   tmStore  = ObjectManager::instance()->get<StorageManagerIF>(objects::TM_STORE);
   tcStore  = ObjectManager::instance()->get<StorageManagerIF>(objects::TC_STORE);
 
+#if defined(RW_VERBOSE)
   if (ipcStore == nullptr) {
     sif::warning << "RwPusService: IPC_STORE not available!" << std::endl;
     return returnvalue::FAILED;
@@ -98,6 +104,8 @@ ReturnValue_t RwPusService::initialize() {
   sif::warning << "RwPusService: init ok. myQ=0x" << std::hex << this->getCommandQueue()
                << " ipc=" << ipcStore << " tm=" << tmStore << " tc=" << tcStore
                << std::dec << std::endl;
+#endif
+  if (ipcStore == nullptr) return returnvalue::FAILED;
   return returnvalue::OK;
 }
 
@@ -118,16 +126,22 @@ ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t, const uint8_t* tcD
   if (tcLen < 4) return CommandingServiceBase::INVALID_TC;
 
   *objectId = static_cast<object_id_t>(be32(tcData));
+#if defined(RW_VERBOSE)
   sif::warning << "PUS220 route: objId=0x" << std::hex << *objectId << std::dec << std::endl;
+#endif
 
   auto* dh = ObjectManager::instance()->get<DeviceHandlerIF>(*objectId);
   if (dh == nullptr) {
+#if defined(RW_VERBOSE)
     sif::warning << "PUS220 route: INVALID_OBJECT for objId=0x" << std::hex << *objectId
                  << std::dec << std::endl;
+#endif
     return CommandingServiceBase::INVALID_OBJECT;
   }
   *id = dh->getCommandQueue();
+#if defined(RW_VERBOSE)
   sif::warning << "PUS220 route: commandQueueId=0x" << std::hex << *id << std::dec << std::endl;
+#endif
 
   lastTargetObjectId_ = *objectId;
 
@@ -137,15 +151,19 @@ ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t, const uint8_t* tcD
 ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subservice,
                                            const uint8_t* tcData, size_t tcLen, uint32_t* state,
                                            object_id_t) {
+#if defined(RW_VERBOSE)
   sif::info << "RwPusService: TC subservice=" << int(subservice) << " len=" << tcLen << std::endl;
+#endif
   if (ipcStore == nullptr) return returnvalue::FAILED;
   if (tcLen < 4) return CommandingServiceBase::INVALID_TC;
 
   const uint8_t* app    = tcData + 4;
   const size_t   appLen = tcLen - 4;
 
+#if defined(RW_VERBOSE)
   sif::warning << "PUS220 prepare: subsvc=" << int(subservice)
                << " appLen=" << appLen << std::endl;
+#endif
 
   if (state) { *state = static_cast<uint32_t>(CmdState::NONE); }
 
@@ -160,8 +178,10 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       if (res != returnvalue::OK) return res;
       std::memcpy(p, &rpm, sizeof(rpm));
 
+#if defined(RW_VERBOSE)
       sif::warning << "PUS220 prepare SET_SPEED: rpm=" << rpm
                    << " store=0x" << std::hex << sid.raw << std::dec << std::endl;
+#endif
 
       ActionMessage::setCommand(message, 0x01 /* CMD_SET_SPEED */, sid);
       return returnvalue::OK;
@@ -174,8 +194,10 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       if (res != returnvalue::OK) return res;
       *p = 0x00;
 
+#if defined(RW_VERBOSE)
       sif::warning << "PUS220 prepare STOP (with dummy store) sid=0x"
                    << std::hex << sid.raw << std::dec << std::endl;
+#endif
 
       ActionMessage::setCommand(message, 0x02 /* CMD_STOP */, sid);
       return returnvalue::OK;
@@ -190,8 +212,10 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       if (res != returnvalue::OK) return res;
       *p = 0x00;
 
+#if defined(RW_VERBOSE)
       sif::warning << "PUS220 prepare STATUS (with dummy store) sid=0x"
                    << std::hex << sid.raw << std::dec << std::endl;
+#endif
 
       ActionMessage::setCommand(message, 0x03 /* CMD_STATUS */, sid);
       return returnvalue::OK;
@@ -201,14 +225,15 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       if (appLen < 2) return CommandingServiceBase::INVALID_TC;
       const uint8_t mode    = app[0];
       const uint8_t submode = app[1];
+#if defined(RW_VERBOSE)
       sif::info << "RwPusService: SET_MODE req -> mode=" << int(mode)
                 << ", sub=" << int(submode) << std::endl;
+#endif
       ModeMessage::setModeMessage(message, ModeMessage::CMD_MODE_COMMAND, mode, submode);
       return returnvalue::OK;
     }
 
     case Subservice::TM_STATUS: {
-      // TM-Subservice wird nie als TC vorbereitet -> als ungültig behandeln
       return CommandingServiceBase::INVALID_TC;
     }
   }
@@ -218,8 +243,10 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
 
 ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object_id_t objectId) {
   if (sid.raw == StorageManagerIF::INVALID_ADDRESS) {
+#if defined(RW_VERBOSE)
     sif::warning << "[PUS220 generic] invalid store address (sid invalid)" << std::endl;
-    return returnvalue::FAILED;
+#endif
+  return returnvalue::FAILED;
   }
 
   StorageManagerIF* stores[3] = {ipcStore, tmStore, tcStore};
@@ -233,9 +260,11 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
     const uint8_t* b = nullptr;
     size_t l = 0;
     auto rv = stores[i]->getData(sid, &b, &l);
+#if defined(RW_VERBOSE)
     sif::warning << "[PUS220 generic] try "
                  << (i == 0 ? "IPC" : (i == 1 ? "TM" : "TC"))
                  << " rv=" << rv << " len=" << l << std::endl;
+#endif
     if (rv == returnvalue::OK && b != nullptr && l > 0) {
       buf = b; len = l; usedStore = stores[i];
       break;
@@ -243,15 +272,19 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
   }
 
   if (buf == nullptr || len == 0) {
+#if defined(RW_VERBOSE)
     sif::warning << "[PUS220 generic] sid=0x" << std::hex << sid.raw
                  << std::dec << " has no usable payload -> keep waiting" << std::endl;
+#endif
     return returnvalue::FAILED;
   }
 
   dumpHexWarn("[PUS220 generic] head", buf, (len < 32 ? len : size_t(32)));
   const int idx = findStatusFrame(buf, len);
+#if defined(RW_VERBOSE)
   sif::warning << "[PUS220 generic] findStatusFrame idx=" << idx << " (len=" << len << ")"
                << std::endl;
+#endif
 
   ReturnValue_t rv = returnvalue::OK;
   if (idx >= 0) {
@@ -260,10 +293,12 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
     const int16_t torque  = static_cast<int16_t>((p[4] << 8) | p[5]);
     const uint8_t running = p[6];
 
+#if defined(RW_VERBOSE)
     if (running > 1) {
       sif::warning << "[PUS220 generic] 'running' flag suspicious: " << int(running)
                    << " (expected 0/1)" << std::endl;
     }
+#endif
 
     // AppData: [object_id(4) | speed(2) | torque(2) | running(1)]
     uint8_t app[9];
@@ -277,27 +312,34 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
     app[7] = static_cast<uint8_t>( torque       & 0xFF);
     app[8] = running;
 
-    // 130 == TM_STATUS
     const auto prv = tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_STATUS),
                                               app, sizeof(app));
+#if defined(RW_VERBOSE)
     sif::warning << "[PUS220 generic] prepareTmPacket rv=" << prv << std::endl;
+#endif
     if (prv == returnvalue::OK) {
       rv = tmHelper.storeAndSendTmPacket();
+#if defined(RW_VERBOSE)
       sif::warning << "[PUS220 generic] storeAndSend rv=" << rv << std::endl;
+#endif
     } else {
       rv = prv;
     }
   } else {
+#if defined(RW_VERBOSE)
     sif::warning << "[PUS220 generic] no AB 10 .. .. .. .. .. CRC frame in payload" << std::endl;
+#endif
     rv = returnvalue::FAILED;
   }
 
   if (usedStore != nullptr) {
     auto delRv = usedStore->deleteData(sid);
+#if defined(RW_VERBOSE)
     if (delRv != returnvalue::OK) {
       sif::warning << "[PUS220 generic] deleteData sid=0x" << std::hex << sid.raw
                    << std::dec << " failed rv=" << delRv << std::endl;
     }
+#endif
   }
 
   return rv;
@@ -307,45 +349,50 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t,
                                         uint32_t* state, CommandMessage*, object_id_t objectId,
                                         bool* isStep) {
 
+#if defined(RW_VERBOSE)
   store_address_t sidAction = ActionMessage::getStoreId(reply);
   store_address_t sidDh     = DeviceHandlerMessage::getStoreAddress(reply);
   sif::warning << "[PUS220] inspect: sidAction=0x" << std::hex << sidAction.raw
-             << " sidDh=0x" << sidDh.raw << std::dec << std::endl;
-                
+               << " sidDh=0x" << sidDh.raw << std::dec << std::endl;
+#endif
+
   const auto cmd = reply->getCommand();
   CmdState st = CmdState::NONE;
   if (state != nullptr) st = static_cast<CmdState>(*state);
 
+#if defined(RW_VERBOSE)
   sif::info << "RwPusService::handleReply cmd=0x" << std::hex << int(cmd)
             << " (" << cmdName(cmd) << ")" << std::dec << std::endl;
   sif::warning << "[PUS220] current state=" << (st == CmdState::WAIT_DATA ? "WAIT_DATA" : "NONE")
                << std::endl;
+#endif
 
-  // --- Nur echte Daten-Replies als Daten behandeln ---
   const bool isDataLike =
       (cmd == ActionMessage::DATA_REPLY) ||
       (cmd == DeviceHandlerMessage::REPLY_DIRECT_COMMAND_DATA) ||
       (cmd == DeviceHandlerMessage::REPLY_RAW_REPLY);
 
   if (isDataLike) {
-    // Bevor wir abschließen: verifizieren, dass wir die Daten auch wirklich aus einem Store bekommen
-    store_address_t sidAction = ActionMessage::getStoreId(reply);
-    store_address_t sidDh     = DeviceHandlerMessage::getStoreAddress(reply);
-    const store_address_t sid = (sidAction.raw != StorageManagerIF::INVALID_ADDRESS) ? sidAction
-                                                                                     : sidDh;
+    store_address_t sidAction2 = ActionMessage::getStoreId(reply);
+    store_address_t sidDh2     = DeviceHandlerMessage::getStoreAddress(reply);
+    const store_address_t sid = (sidAction2.raw != StorageManagerIF::INVALID_ADDRESS) ? sidAction2
+                                                                                      : sidDh2;
 
+#if defined(RW_VERBOSE)
     sif::warning << "[PUS220] data-like reply, sid=0x" << std::hex << sid.raw << std::dec
                  << " -> try to parse" << std::endl;
+#endif
 
     const auto rv = handleDataReplyAndEmitTm(sid, objectId);
     if (rv == returnvalue::OK) {
       if (state) *state = static_cast<uint32_t>(CmdState::NONE);
       return CommandingServiceBase::EXECUTION_COMPLETE;
     } else {
-      // Keine verwertbaren Daten -> falls wir auf Daten warten, offen lassen
       if (st == CmdState::WAIT_DATA) {
+#if defined(RW_VERBOSE)
         sif::warning << "[PUS220] data-like reply without usable payload -> keep waiting"
                      << std::endl;
+#endif
         if (isStep) *isStep = true;
         return returnvalue::OK;
       }
@@ -353,20 +400,22 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t,
     }
   }
 
-  // --- Keine Daten angehängt -> kontrolliere Flow-Replies ---
   switch (cmd) {
     case ActionMessage::STEP_SUCCESS:
       if (isStep) *isStep = true;
       if (st == CmdState::WAIT_DATA) {
+#if defined(RW_VERBOSE)
         sif::warning << "[PUS220] keeping command OPEN (waiting for DATA with store id)" << std::endl;
+#endif
         return returnvalue::OK;
       }
       return returnvalue::OK;
 
     case ActionMessage::COMPLETION_SUCCESS:
       if (st == CmdState::WAIT_DATA) {
-        // Warten weiter auf den DATA_REPLY, nicht schließen
+#if defined(RW_VERBOSE)
         sif::warning << "[PUS220] STILL waiting for DATA, not closing yet" << std::endl;
+#endif
         return returnvalue::OK;
       }
       return CommandingServiceBase::EXECUTION_COMPLETE;
@@ -379,8 +428,10 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t,
       return ActionMessage::getReturnCode(reply);
 
     default:
+#if defined(RW_VERBOSE)
       sif::warning << "[PUS220] unhandled control reply; cmd=0x" << std::hex << int(cmd)
                    << std::dec << std::endl;
+#endif
       if (st == CmdState::WAIT_DATA) {
         if (isStep) *isStep = true;
         return returnvalue::OK;
@@ -389,12 +440,13 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t,
   }
 }
 
-
 void RwPusService::handleUnrequestedReply(CommandMessage* reply) {
   const auto cmd = reply->getCommand();
+#if defined(RW_VERBOSE)
   sif::warning << "RwPusService::handleUnrequestedReply cmd=0x"
                << std::hex << int(cmd) << " (" << cmdName(cmd) << ")"
                << std::dec << std::endl;
+#endif
 
   // Versuche, einen Store-Address aus beiden Formaten zu holen
   store_address_t sidAction = ActionMessage::getStoreId(reply);
@@ -403,15 +455,16 @@ void RwPusService::handleUnrequestedReply(CommandMessage* reply) {
   if (sidAction.raw != StorageManagerIF::INVALID_ADDRESS ||
       sidDh.raw     != StorageManagerIF::INVALID_ADDRESS) {
     const auto sid = (sidAction.raw != StorageManagerIF::INVALID_ADDRESS) ? sidAction : sidDh;
+#if defined(RW_VERBOSE)
     sif::warning << "[PUS220] UNREQUESTED: treating message as DATA (sid=0x"
                  << std::hex << sid.raw << std::dec << "), object=0x"
                  << std::hex << lastTargetObjectId_ << std::dec << std::endl;
-
-    // Erzeuge & sende TM-220/130
+#endif
     (void)handleDataReplyAndEmitTm(sid, lastTargetObjectId_);
   } else {
+#if defined(RW_VERBOSE)
     sif::warning << "[PUS220] UNREQUESTED: no store id in message -> ignore" << std::endl;
+#endif
   }
-
   // kein Rückgabewert (Signatur ist void)
 }

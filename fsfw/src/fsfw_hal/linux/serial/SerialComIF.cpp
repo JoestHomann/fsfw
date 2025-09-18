@@ -15,6 +15,9 @@
 #include <sys/ioctl.h>    // Needed to assert DTR/RTS: TIOCMGET, TIOCMSET, TIOCM_DTR, TIOCM_RTS
 // --- JH END ---
 
+// Debug On/Off switch for RW (set to 1 to enable debug output):
+#define RW_VERBOSE 0
+
 SerialComIF::SerialComIF(object_id_t objectId) : SystemObject(objectId) {}
 
 SerialComIF::~SerialComIF() {}
@@ -235,7 +238,7 @@ ReturnValue_t SerialComIF::sendMessage(CookieIF* cookie, const uint8_t* sendData
   }
 
   // ---------- JH START DEBUG ------------
-  #if FSFW_CPP_OSTREAM_ENABLED == 1
+  #if RW_VERBOSE
   sif::info << "SerialComIF: write " << sendLen << " bytes" << std::endl;
   for(size_t i=0;i<sendLen;i++) { sif::info << std::hex << int(sendData[i]) << " "; }
   sif::info << std::dec << std::endl;
@@ -404,7 +407,7 @@ ReturnValue_t SerialComIF::readReceivedMessage(CookieIF* cookie, uint8_t** buffe
   uartDeviceMapIter->second.replyLen = 0;
 
   // ---------- JH START DEBUG ------------
-  #if FSFW_CPP_OSTREAM_ENABLED == 1
+  #if RW_VERBOSE
   if (*size > 0) {
     sif::info << "SerialComIF: read " << *size << " bytes" << std::endl;
     for(size_t i=0;i<*size;i++) { sif::info << std::hex << int((*buffer)[i]) << " "; }
