@@ -9,5 +9,4 @@ target_sources(
           DeviceTmReportingWrapper.cpp
           HealthDevice.cpp
           # NEW:
-          #ReactionWheelsHandler.cpp
-          RwCommanderHandler.cpp)
+          ReactionWheelsHandler.cpp)

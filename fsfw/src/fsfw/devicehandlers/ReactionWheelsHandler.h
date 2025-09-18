@@ -7,7 +7,7 @@
 #include "fsfw/returnvalues/returnvalue.h"
 #include "fsfw/ipc/MessageQueueIF.h"
 
-class RwCommanderHandler : public DeviceHandlerBase {
+class ReactionWheelsHandler : public DeviceHandlerBase {
  public:
   // On-wire constants
   static constexpr uint8_t START_BYTE_CMD    = 0xAA;
@@ -38,7 +38,7 @@ class RwCommanderHandler : public DeviceHandlerBase {
           raw(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::RAW_REPLY), this) {}
   };
 
-  RwCommanderHandler(object_id_t objectId, object_id_t comIF, CookieIF* cookie);
+  ReactionWheelsHandler(object_id_t objectId, object_id_t comIF, CookieIF* cookie);
 
   // DeviceHandlerBase interface
   void          doStartUp() override;

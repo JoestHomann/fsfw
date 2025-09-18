@@ -56,7 +56,7 @@ ReturnValue_t pst::pollingSequenceDevices(FixedTimeslotTaskIF *thisSequence) {
 
   // ======================================================================
   // === RW COMMANDER HANDLER (ADDED) =====================================
-  // Schedules the RwCommanderHandler so that buildNormalDeviceCommand()
+  // Schedules the ReactionWheelsHandler so that buildNormalDeviceCommand()
   // is called periodically in MODE_NORMAL. Make sure that:
   //  1) objects::RW_COMMANDER_HANDLER exists in systemObjectList.h,
   //  2) the handler is created in the Object Factory, and
@@ -66,15 +66,15 @@ ReturnValue_t pst::pollingSequenceDevices(FixedTimeslotTaskIF *thisSequence) {
   //   - SEND_WRITE / GET_WRITE: transmit command bytes
   //   - SEND_READ  / GET_READ : request & collect reply bytes
   // ======================================================================
-  thisSequence->addSlot(objects::RW_CMD_HANDLER, 0.00 * length, DeviceHandlerIF::PERFORM_OPERATION);
-  thisSequence->addSlot(objects::RW_CMD_HANDLER, 0.30 * length, DeviceHandlerIF::SEND_WRITE);
-  thisSequence->addSlot(objects::RW_CMD_HANDLER, 0.45 * length, DeviceHandlerIF::GET_WRITE);
-  thisSequence->addSlot(objects::RW_CMD_HANDLER, 0.60 * length, DeviceHandlerIF::SEND_READ);
-  thisSequence->addSlot(objects::RW_CMD_HANDLER, 0.80 * length, DeviceHandlerIF::GET_READ);
+  thisSequence->addSlot(objects::RW_HANDLER, 0.00 * length, DeviceHandlerIF::PERFORM_OPERATION);
+  thisSequence->addSlot(objects::RW_HANDLER, 0.30 * length, DeviceHandlerIF::SEND_WRITE);
+  thisSequence->addSlot(objects::RW_HANDLER, 0.45 * length, DeviceHandlerIF::GET_WRITE);
+  thisSequence->addSlot(objects::RW_HANDLER, 0.60 * length, DeviceHandlerIF::SEND_READ);
+  thisSequence->addSlot(objects::RW_HANDLER, 0.80 * length, DeviceHandlerIF::GET_READ);
 
   // Add this just before the final checkSequence() block:
 #if FSFW_CPP_OSTREAM_ENABLED == 1
-  sif::info << "PST devices: scheduled RW_CMD_HANDLER with 5 slots; period(ms)="
+  sif::info << "PST devices: scheduled RW_HANDLER with 5 slots; period(ms)="
             << length << std::endl; // Debug: proves this PST is compiled & called
 #endif
 

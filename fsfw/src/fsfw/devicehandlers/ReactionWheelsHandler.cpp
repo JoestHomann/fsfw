@@ -1,4 +1,4 @@
-#include "RwCommanderHandler.h"
+#include "ReactionWheelsHandler.h"
 
 #include <cstring>   // memcpy
 #include <iomanip>   // debug formatting
@@ -33,33 +33,33 @@ static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
 static inline void dumpHexWarn(const char*, const uint8_t*, size_t) {}
 #endif
 
-RwCommanderHandler::RwCommanderHandler(object_id_t objectId, object_id_t comIF, CookieIF* cookie)
+ReactionWheelsHandler::ReactionWheelsHandler(object_id_t objectId, object_id_t comIF, CookieIF* cookie)
     : DeviceHandlerBase(objectId, comIF, cookie) {}
 
-void RwCommanderHandler::doStartUp() {
+void ReactionWheelsHandler::doStartUp() {
   // Give the device a brief warm-up period before entering NORMAL
   if (warmupCnt < warmupCycles) {
     ++warmupCnt;
     return;
   }
-  sif::info << "RwCommanderHandler: doStartUp()" << std::endl;
+  sif::info << "ReactionWheelsHandler: doStartUp()" << std::endl;
   setMode(MODE_NORMAL);
 }
 
-void RwCommanderHandler::doShutDown() {
-  sif::info << "RwCommanderHandler: doShutDown()" << std::endl;
+void ReactionWheelsHandler::doShutDown() {
+  sif::info << "ReactionWheelsHandler: doShutDown()" << std::endl;
   setMode(MODE_OFF);
 }
 
-void RwCommanderHandler::modeChanged() {
+void ReactionWheelsHandler::modeChanged() {
   Mode_t m{}; Submode_t s{};
   this->getMode(&m, &s);
-  sif::info << "RwCommanderHandler: modeChanged -> " << static_cast<int>(m)
+  sif::info << "ReactionWheelsHandler: modeChanged -> " << static_cast<int>(m)
                << " (sub=" << static_cast<int>(s) << ")" << std::endl;
 }
 
 // Helper: Drain UART RX until no more bytes are immediately available
-ReturnValue_t RwCommanderHandler::drainRxNow() {
+ReturnValue_t ReactionWheelsHandler::drainRxNow() {
   if (communicationInterface == nullptr || comCookie == nullptr) {
     return returnvalue::OK;
   }
@@ -90,7 +90,7 @@ ReturnValue_t RwCommanderHandler::drainRxNow() {
   return returnvalue::OK;
 }
 
-ReturnValue_t RwCommanderHandler::buildNormalDeviceCommand(DeviceCommandId_t* id) {
+ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t* id) {
   // 1) If a STATUS TM is pending due to a TC request, service it immediately.
   if (pendingTcStatusTm) {
 #if RW_VERBOSE
@@ -148,12 +148,12 @@ ReturnValue_t RwCommanderHandler::buildNormalDeviceCommand(DeviceCommandId_t* id
   return NOTHING_TO_SEND;
 }
 
-ReturnValue_t RwCommanderHandler::buildTransitionDeviceCommand(DeviceCommandId_t* id) {
+ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandId_t* id) {
   *id = DeviceHandlerIF::NO_COMMAND_ID;
   return NOTHING_TO_SEND;
 }
 
-ReturnValue_t RwCommanderHandler::buildCommandFromCommand(DeviceCommandId_t deviceCommand,
+ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t deviceCommand,
                                                           const uint8_t* data, size_t len) {
   switch (deviceCommand) {
     case CMD_SET_SPEED: {
@@ -212,14 +212,14 @@ ReturnValue_t RwCommanderHandler::buildCommandFromCommand(DeviceCommandId_t devi
 
     default:
 #if RW_VERBOSE
-      sif::warning << "RwCommanderHandler: unknown deviceCommand 0x"
+      sif::warning << "ReactionWheelsHandler: unknown deviceCommand 0x"
                    << std::hex << deviceCommand << std::dec << std::endl;
 #endif
       return returnvalue::FAILED;
   }
 }
 
-void RwCommanderHandler::fillCommandAndReplyMap() {
+void ReactionWheelsHandler::fillCommandAndReplyMap() {
   // Direct commands
   insertInCommandMap(CMD_SET_SPEED, false, 0);
   insertInCommandMap(CMD_STOP, false, 0);
@@ -239,7 +239,7 @@ void RwCommanderHandler::fillCommandAndReplyMap() {
   insertInCommandMap(CMD_STATUS, false, 0);
 }
 
-ReturnValue_t RwCommanderHandler::scanForReply(const uint8_t* start, size_t len,
+ReturnValue_t ReactionWheelsHandler::scanForReply(const uint8_t* start, size_t len,
                                                DeviceCommandId_t* foundId, size_t* foundLen) {
 #if RW_VERBOSE
   dumpHexWarn("scanForReply: head bytes",
@@ -266,7 +266,7 @@ ReturnValue_t RwCommanderHandler::scanForReply(const uint8_t* start, size_t len,
   return returnvalue::OK;
 }
 
-ReturnValue_t RwCommanderHandler::interpretDeviceReply(DeviceCommandId_t id,
+ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
                                                        const uint8_t* packet) {
   if (id != REPLY_STATUS_POLL) {
     return returnvalue::FAILED;
@@ -307,9 +307,9 @@ ReturnValue_t RwCommanderHandler::interpretDeviceReply(DeviceCommandId_t id,
   return returnvalue::OK;
 }
 
-uint32_t RwCommanderHandler::getTransitionDelayMs(Mode_t /*from*/, Mode_t /*to*/) { return 6000; }
+uint32_t ReactionWheelsHandler::getTransitionDelayMs(Mode_t /*from*/, Mode_t /*to*/) { return 6000; }
 
-ReturnValue_t RwCommanderHandler::initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
+ReturnValue_t ReactionWheelsHandler::initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
                                                           LocalDataPoolManager&) {
   // Backing entry for LocalPoolVector<uint8_t,8> in dataset
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::RAW_REPLY),
@@ -317,7 +317,7 @@ ReturnValue_t RwCommanderHandler::initializeLocalDataPool(localpool::DataPool& l
   return returnvalue::OK;
 }
 
-ReturnValue_t RwCommanderHandler::executeAction(ActionId_t actionId, MessageQueueId_t commandedBy,
+ReturnValue_t ReactionWheelsHandler::executeAction(ActionId_t actionId, MessageQueueId_t commandedBy,
                                                 const uint8_t* data, size_t size) {
 #if RW_VERBOSE
   sif::warning << "executeAction: actionId=0x" << std::hex << int(actionId)
@@ -335,7 +335,7 @@ ReturnValue_t RwCommanderHandler::executeAction(ActionId_t actionId, MessageQueu
   return DeviceHandlerBase::executeAction(actionId, commandedBy, data, size);
 }
 
-uint8_t RwCommanderHandler::crc8(const uint8_t* data, size_t len) {
+uint8_t ReactionWheelsHandler::crc8(const uint8_t* data, size_t len) {
   uint8_t crc = 0x00;
   for (size_t i = 0; i < len; ++i) {
     crc ^= data[i];

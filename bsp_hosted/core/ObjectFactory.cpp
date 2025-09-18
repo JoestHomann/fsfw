@@ -18,8 +18,8 @@
 #include "fsfw/src/fsfw_hal/linux/serial/SerialCookie.h"
 // JH
 
-// --- JH: RwCommanderHandler & PUS service ---
-#include "fsfw/src/fsfw/devicehandlers/RwCommanderHandler.h"
+// --- JH: ReactionWheelsHandler & PUS service ---
+#include "fsfw/src/fsfw/devicehandlers/ReactionWheelsHandler.h"
 #include "fsfw/src/fsfw/tmtcservices/RwPusService.h"
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"  // for DeviceHandlerIF::MODE_RAW
 #include "fsfw/modes/ModeMessage.h"
@@ -99,11 +99,11 @@ void ObjectFactory::produce(void* args) {
   new FsfwTestTask(objects::TEST_TASK, periodicEvent);
 
   // ---------------- rwCommanderHandler ------------------------
-  // --- JH: RwCommanderHandler (minimal serial commander)
-(void) new SerialComIF(objects::RW_CMD_SERIAL_COM_IF);  // SystemObject registers itself
+  // --- JH: ReactionWheelsHandler (minimal serial commander)
+(void) new SerialComIF(objects::RW_SERIAL_COM_IF);  // SystemObject registers itself
 
 auto* rwCmdCookie = new SerialCookie(
-    objects::RW_CMD_HANDLER,
+    objects::RW_HANDLER,
     "/dev/ttyACM0",                // ggf. anpassen
     UartBaudRate::RATE_9600,
     1024,
@@ -113,8 +113,8 @@ rwCmdCookie->setReadCycles(5);      // allow up to 5 read() attempts per GET_REA
 rwCmdCookie->setToFlushInput(true); // optional: flush stale bytes after opening port
 
 auto* rwCmdHandler =
-    new RwCommanderHandler(objects::RW_CMD_HANDLER,
-                           objects::RW_CMD_SERIAL_COM_IF,
+    new ReactionWheelsHandler(objects::RW_HANDLER,
+                           objects::RW_SERIAL_COM_IF,
                            rwCmdCookie);
 
   // ---------------- RwPusService (PUS-220) --------------------

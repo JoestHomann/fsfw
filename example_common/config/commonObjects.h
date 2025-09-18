@@ -42,9 +42,9 @@ enum commonObjects : object_id_t {
   TEST_DUMMY_4 = 0x74000004,
   TEST_DUMMY_5 = 0x74000005,
 
-  // NEW RwCommanderHandler & Pus objects ---------------------
- RW_CMD_SERIAL_COM_IF = 0x7302,
- RW_CMD_HANDLER       = 0x4402,
+  // NEW ReactionWheelsHandler & Pus objects ---------------------
+ RW_SERIAL_COM_IF = 0x7302,
+ RW_HANDLER       = 0x4402,
  RW_PUS_SERVICE       = 0x5020,
 
 };

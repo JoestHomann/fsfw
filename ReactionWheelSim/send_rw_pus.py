@@ -24,8 +24,8 @@ MODE_ON     = 1
 MODE_NORMAL = 2
 MODE_RAW    = 3
 
-# Default destination object (objects::RW_CMD_HANDLER, big-endian in AppData)
-RW_CMD_HANDLER_OID = 0x00004402
+# Default destination object (objects::RW_HANDLER, big-endian in AppData)
+RW_HANDLER_OID = 0x00004402
 
 # ---- Receive tuning ----
 SOCKET_TIMEOUT_S   = 9.0   # timeout for a single recv() attempt
@@ -174,7 +174,7 @@ def parse_int(s: str) -> int:
 
 def main():
     print("Interactive PUS-220 sender for RW. Type 'help' for commands.")
-    oid = RW_CMD_HANDLER_OID
+    oid = RW_HANDLER_OID
     seq = itertools.count()
     sock = make_socket()  # one socket for TX+RX
 
