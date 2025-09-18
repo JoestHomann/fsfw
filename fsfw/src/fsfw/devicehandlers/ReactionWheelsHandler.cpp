@@ -1,9 +1,9 @@
 #include "ReactionWheelsHandler.h"
 
-#include <cstring>   // memcpy
-#include <iomanip>   // debug formatting
+#include <cstring>  // memcpy
+#include <iomanip>  // debug formatting
 
-#include "fsfw/action/ActionHelper.h"      // reportData(...)
+#include "fsfw/action/ActionHelper.h"  // reportData(...)
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"
 #include "fsfw/returnvalues/returnvalue.h"
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
@@ -26,14 +26,17 @@ static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
   }
   sif::warning << std::dec << std::endl;
 #else
-  (void)tag; (void)p; (void)n;
+  (void)tag;
+  (void)p;
+  (void)n;
 #endif
 }
 #else
 static inline void dumpHexWarn(const char*, const uint8_t*, size_t) {}
 #endif
 
-ReactionWheelsHandler::ReactionWheelsHandler(object_id_t objectId, object_id_t comIF, CookieIF* cookie)
+ReactionWheelsHandler::ReactionWheelsHandler(object_id_t objectId, object_id_t comIF,
+                                             CookieIF* cookie)
     : DeviceHandlerBase(objectId, comIF, cookie) {}
 
 void ReactionWheelsHandler::doStartUp() {
@@ -52,10 +55,11 @@ void ReactionWheelsHandler::doShutDown() {
 }
 
 void ReactionWheelsHandler::modeChanged() {
-  Mode_t m{}; Submode_t s{};
+  Mode_t m{};
+  Submode_t s{};
   this->getMode(&m, &s);
   sif::info << "ReactionWheelsHandler: modeChanged -> " << static_cast<int>(m)
-               << " (sub=" << static_cast<int>(s) << ")" << std::endl;
+            << " (sub=" << static_cast<int>(s) << ")" << std::endl;
 }
 
 // Helper: Drain UART RX until no more bytes are immediately available
@@ -74,11 +78,10 @@ ReturnValue_t ReactionWheelsHandler::drainRxNow() {
     }
 
     uint8_t* buf = nullptr;
-    size_t   sz  = 0;
-    ReturnValue_t rvRead =
-        communicationInterface->readReceivedMessage(comCookie, &buf, &sz);
+    size_t sz = 0;
+    ReturnValue_t rvRead = communicationInterface->readReceivedMessage(comCookie, &buf, &sz);
     if (rvRead != returnvalue::OK || buf == nullptr || sz == 0) {
-      break; // nothing to drop
+      break;  // nothing to drop
     }
 #if RW_VERBOSE
     sif::warning << "drainRxNow: dropped " << sz << " stale bytes" << std::endl;
@@ -106,9 +109,9 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
     txBuf[3] = 0x00;
     txBuf[4] = crc8(txBuf, 4);
 
-    rawPacket    = txBuf;
+    rawPacket = txBuf;
     rawPacketLen = 5;
-    *id          = CMD_STATUS_POLL;
+    *id = CMD_STATUS_POLL;
 
     dumpHexWarn("DH TX (TC-driven STATUS poll)", txBuf, 5);
     return returnvalue::OK;
@@ -135,9 +138,9 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
     txBuf[3] = 0x00;
     txBuf[4] = crc8(txBuf, 4);
 
-    rawPacket    = txBuf;
+    rawPacket = txBuf;
     rawPacketLen = 5;
-    *id          = CMD_STATUS_POLL;
+    *id = CMD_STATUS_POLL;
 
     dumpHexWarn("DH TX (periodic STATUS poll)", txBuf, 5);
     return returnvalue::OK;
@@ -154,7 +157,7 @@ ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandI
 }
 
 ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t deviceCommand,
-                                                          const uint8_t* data, size_t len) {
+                                                             const uint8_t* data, size_t len) {
   switch (deviceCommand) {
     case CMD_SET_SPEED: {
       if (len < sizeof(int16_t)) {
@@ -171,7 +174,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       txBuf[3] = static_cast<uint8_t>(u & 0xFF);
       txBuf[4] = crc8(txBuf, 4);
 
-      rawPacket    = txBuf;
+      rawPacket = txBuf;
       rawPacketLen = 5;
 
       dumpHexWarn("DH TX (TC frame: SET_SPEED)", txBuf, 5);
@@ -186,7 +189,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       txBuf[3] = 0x00;
       txBuf[4] = crc8(txBuf, 4);
 
-      rawPacket    = txBuf;
+      rawPacket = txBuf;
       rawPacketLen = 5;
 
       dumpHexWarn("DH TX (TC frame: STOP)", txBuf, 5);
@@ -202,7 +205,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       txBuf[3] = 0x00;
       txBuf[4] = crc8(txBuf, 4);
 
-      rawPacket    = txBuf;
+      rawPacket = txBuf;
       rawPacketLen = 5;
 
       dumpHexWarn("DH TX (TC frame: STATUS)", txBuf, 5);
@@ -212,8 +215,8 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
 
     default:
 #if RW_VERBOSE
-      sif::warning << "ReactionWheelsHandler: unknown deviceCommand 0x"
-                   << std::hex << deviceCommand << std::dec << std::endl;
+      sif::warning << "ReactionWheelsHandler: unknown deviceCommand 0x" << std::hex << deviceCommand
+                   << std::dec << std::endl;
 #endif
       return returnvalue::FAILED;
   }
@@ -240,10 +243,9 @@ void ReactionWheelsHandler::fillCommandAndReplyMap() {
 }
 
 ReturnValue_t ReactionWheelsHandler::scanForReply(const uint8_t* start, size_t len,
-                                               DeviceCommandId_t* foundId, size_t* foundLen) {
+                                                  DeviceCommandId_t* foundId, size_t* foundLen) {
 #if RW_VERBOSE
-  dumpHexWarn("scanForReply: head bytes",
-              start, (len > 16 ? 16 : len));
+  dumpHexWarn("scanForReply: head bytes", start, (len > 16 ? 16 : len));
 #endif
 
   // Expect 8-byte frame: AB 10 <spdH spdL> <torH torL> <running> <crc>
@@ -254,33 +256,31 @@ ReturnValue_t ReactionWheelsHandler::scanForReply(const uint8_t* start, size_t l
     return returnvalue::FAILED;
   }
 
-  *foundId  = REPLY_STATUS_POLL;  // unified classification to match the map
+  *foundId = REPLY_STATUS_POLL;  // unified classification to match the map
   *foundLen = 8;
 
 #if RW_VERBOSE
-  sif::warning << "scanForReply: MATCH -> foundId=0x" << std::hex
-               << int(REPLY_STATUS_POLL) << std::dec
-               << " len=" << *foundLen << std::endl;
+  sif::warning << "scanForReply: MATCH -> foundId=0x" << std::hex << int(REPLY_STATUS_POLL)
+               << std::dec << " len=" << *foundLen << std::endl;
   dumpHexWarn("scanForReply: matched frame", start, 8);
 #endif
   return returnvalue::OK;
 }
 
 ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
-                                                       const uint8_t* packet) {
+                                                          const uint8_t* packet) {
   if (id != REPLY_STATUS_POLL) {
     return returnvalue::FAILED;
   }
 
   dumpHexWarn("interpretDeviceReply: frame", packet, 8);
 
-  const int16_t speed   = static_cast<int16_t>((packet[2] << 8) | packet[3]);
-  const int16_t torque  = static_cast<int16_t>((packet[4] << 8) | packet[5]);
+  const int16_t speed = static_cast<int16_t>((packet[2] << 8) | packet[3]);
+  const int16_t torque = static_cast<int16_t>((packet[4] << 8) | packet[5]);
   const uint8_t running = packet[6];
 
   // Console output (keep user-visible)
-  sif::info << "RW STATUS: speed=" << speed
-            << " RPM, torque=" << torque
+  sif::info << "RW STATUS: speed=" << speed << " RPM, torque=" << torque
             << " mNm, running=" << int(running) << std::endl;
 
   // Update local dataset
@@ -300,37 +300,38 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
                                     /*append*/ false);
     }
     // Clear TC-wait flags after delivering the data
-    pendingTcStatusTm         = false;
+    pendingTcStatusTm = false;
     pendingTcStatusReportedTo = MessageQueueIF::NO_QUEUE;
   }
 
   return returnvalue::OK;
 }
 
-uint32_t ReactionWheelsHandler::getTransitionDelayMs(Mode_t /*from*/, Mode_t /*to*/) { return 6000; }
+uint32_t ReactionWheelsHandler::getTransitionDelayMs(Mode_t /*from*/, Mode_t /*to*/) {
+  return 6000;
+}
 
 ReturnValue_t ReactionWheelsHandler::initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
-                                                          LocalDataPoolManager&) {
+                                                             LocalDataPoolManager&) {
   // Backing entry for LocalPoolVector<uint8_t,8> in dataset
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::RAW_REPLY),
-                           new PoolEntry<uint8_t>(8));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::RAW_REPLY), new PoolEntry<uint8_t>(8));
   return returnvalue::OK;
 }
 
-ReturnValue_t ReactionWheelsHandler::executeAction(ActionId_t actionId, MessageQueueId_t commandedBy,
-                                                const uint8_t* data, size_t size) {
+ReturnValue_t ReactionWheelsHandler::executeAction(ActionId_t actionId,
+                                                   MessageQueueId_t commandedBy,
+                                                   const uint8_t* data, size_t size) {
 #if RW_VERBOSE
-  sif::warning << "executeAction: actionId=0x" << std::hex << int(actionId)
-               << " size=" << std::dec << size
-               << " commandedBy=0x" << std::hex << commandedBy << std::dec << std::endl;
+  sif::warning << "executeAction: actionId=0x" << std::hex << int(actionId) << " size=" << std::dec
+               << size << " commandedBy=0x" << std::hex << commandedBy << std::dec << std::endl;
 #endif
 
   const auto cmd = static_cast<DeviceCommandId_t>(actionId);
   if (cmd == CMD_STATUS) {
     // Remember requester, snooze polls briefly, and trigger next poll immediately
-    pendingTcStatusTm         = true;
+    pendingTcStatusTm = true;
     pendingTcStatusReportedTo = commandedBy;
-    pollSnooze                = POLL_SNOOZE_CYCLES;
+    pollSnooze = POLL_SNOOZE_CYCLES;
   }
   return DeviceHandlerBase::executeAction(actionId, commandedBy, data, size);
 }
@@ -340,8 +341,7 @@ uint8_t ReactionWheelsHandler::crc8(const uint8_t* data, size_t len) {
   for (size_t i = 0; i < len; ++i) {
     crc ^= data[i];
     for (int j = 0; j < 8; ++j) {
-      crc = (crc & 0x80) ? static_cast<uint8_t>((crc << 1) ^ 0x07)
-                         : static_cast<uint8_t>(crc << 1);
+      crc = (crc & 0x80) ? static_cast<uint8_t>((crc << 1) ^ 0x07) : static_cast<uint8_t>(crc << 1);
     }
   }
   return crc;

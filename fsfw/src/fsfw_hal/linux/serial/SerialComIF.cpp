@@ -12,7 +12,7 @@
 #include "fsfw_hal/linux/utility.h"
 
 // --- JH START ---
-#include <sys/ioctl.h>    // Needed to assert DTR/RTS: TIOCMGET, TIOCMSET, TIOCM_DTR, TIOCM_RTS
+#include <sys/ioctl.h>  // Needed to assert DTR/RTS: TIOCMGET, TIOCMSET, TIOCM_DTR, TIOCM_RTS
 // --- JH END ---
 
 // Debug On/Off switch for RW (set to 1 to enable debug output):
@@ -118,7 +118,7 @@ int SerialComIF::configureUartPort(SerialCookie* uartCookie) {
 #endif
     return fd;
   }
-  
+
   /*// --- JH START --- (NOT NEEDED probably - leaving it for now)
   // : Assert DTR/RTS so Arduino leaves while(!Serial) like pyserial does ---
   int mstat = 0;
@@ -131,9 +131,7 @@ int SerialComIF::configureUartPort(SerialCookie* uartCookie) {
   // --- JH END ---*/
 
   return fd;
-  
 }
-
 
 void SerialComIF::setStopBitOptions(struct termios* options, SerialCookie* uartCookie) {
   /* Clear stop field. Sets stop bit to one bit */
@@ -237,14 +235,16 @@ ReturnValue_t SerialComIF::sendMessage(CookieIF* cookie, const uint8_t* sendData
     return returnvalue::FAILED;
   }
 
-  // ---------- JH START DEBUG ------------
-  #if RW_VERBOSE
+// ---------- JH START DEBUG ------------
+#if RW_VERBOSE
   sif::info << "SerialComIF: write " << sendLen << " bytes" << std::endl;
-  for(size_t i=0;i<sendLen;i++) { sif::info << std::hex << int(sendData[i]) << " "; }
+  for (size_t i = 0; i < sendLen; i++) {
+    sif::info << std::hex << int(sendData[i]) << " ";
+  }
   sif::info << std::dec << std::endl;
-  #endif
+#endif
   // ----------- JH END DEBUG -------------
-  
+
   return returnvalue::OK;
 }
 
@@ -368,7 +368,7 @@ ReturnValue_t SerialComIF::handleNoncanonicalRead(SerialCookie& uartCookie,
     return returnvalue::FAILED;
   } else if (bytesRead != static_cast<int>(requestLen)) {
     if (uartCookie.isReplySizeFixed()) {
-#if FSFW_CPP_OSTREAM_ENABLED == 0 // Disabled (JH)
+#if FSFW_CPP_OSTREAM_ENABLED == 0  // Disabled (JH)
       sif::warning << "UartComIF::requestReceiveMessage: Only read " << bytesRead << " of "
                    << requestLen << " bytes" << std::endl;
 #endif
@@ -406,15 +406,17 @@ ReturnValue_t SerialComIF::readReceivedMessage(CookieIF* cookie, uint8_t** buffe
   /* Length is reset to 0 to prevent reading the same data twice */
   uartDeviceMapIter->second.replyLen = 0;
 
-  // ---------- JH START DEBUG ------------
-  #if RW_VERBOSE
+// ---------- JH START DEBUG ------------
+#if RW_VERBOSE
   if (*size > 0) {
     sif::info << "SerialComIF: read " << *size << " bytes" << std::endl;
-    for(size_t i=0;i<*size;i++) { sif::info << std::hex << int((*buffer)[i]) << " "; }
+    for (size_t i = 0; i < *size; i++) {
+      sif::info << std::hex << int((*buffer)[i]) << " ";
+    }
     sif::info << std::dec << std::endl;
   }
 #endif
-// ----------- JH END DEBUG -------------
+  // ----------- JH END DEBUG -------------
   return returnvalue::OK;
 }
 

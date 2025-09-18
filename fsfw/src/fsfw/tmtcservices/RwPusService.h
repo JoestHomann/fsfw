@@ -1,9 +1,9 @@
 #pragma once
 
-#include "fsfw/tmtcservices/CommandingServiceBase.h"
+#include "commonObjects.h"
 #include "fsfw/storagemanager/StorageManagerIF.h"
 #include "fsfw/storagemanager/storeAddress.h"
-#include "commonObjects.h"
+#include "fsfw/tmtcservices/CommandingServiceBase.h"
 
 /**
  * Minimal PUS service for a reaction wheel commander.
@@ -22,9 +22,9 @@ class RwPusService : public CommandingServiceBase {
  public:
   enum Subservice : uint8_t {
     SET_SPEED = 1,
-    STOP      = 2,
-    STATUS    = 3,
-    SET_MODE  = 10,
+    STOP = 2,
+    STATUS = 3,
+    SET_MODE = 10,
     TM_STATUS = 130,
   };
 
@@ -36,17 +36,14 @@ class RwPusService : public CommandingServiceBase {
  protected:
   // CommandingServiceBase hooks
   ReturnValue_t isValidSubservice(uint8_t subservice) override;
-  ReturnValue_t getMessageQueueAndObject(uint8_t subservice, const uint8_t* tcData,
-                                         size_t tcLen, MessageQueueId_t* id,
-                                         object_id_t* objectId) override;
+  ReturnValue_t getMessageQueueAndObject(uint8_t subservice, const uint8_t* tcData, size_t tcLen,
+                                         MessageQueueId_t* id, object_id_t* objectId) override;
 
-  ReturnValue_t prepareCommand(CommandMessage* message, uint8_t subservice,
-                               const uint8_t* tcData, size_t tcLen, uint32_t* state,
-                               object_id_t objectId) override;
+  ReturnValue_t prepareCommand(CommandMessage* message, uint8_t subservice, const uint8_t* tcData,
+                               size_t tcLen, uint32_t* state, object_id_t objectId) override;
 
-  ReturnValue_t handleReply(const CommandMessage* reply, Command_t previousCommand,
-                            uint32_t* state, CommandMessage* next, object_id_t objectId,
-                            bool* isStep) override;
+  ReturnValue_t handleReply(const CommandMessage* reply, Command_t previousCommand, uint32_t* state,
+                            CommandMessage* next, object_id_t objectId, bool* isStep) override;
 
   // Parses RW status payload from store and emits TM_STATUS.
   ReturnValue_t handleDataReplyAndEmitTm(store_address_t sid, object_id_t objectId);
@@ -57,8 +54,8 @@ class RwPusService : public CommandingServiceBase {
  private:
   // Stores (resolved in initialize())
   StorageManagerIF* ipcStore = nullptr;
-  StorageManagerIF* tmStore  = nullptr;
-  StorageManagerIF* tcStore  = nullptr;
+  StorageManagerIF* tmStore = nullptr;
+  StorageManagerIF* tcStore = nullptr;
 
   // Last addressed RW object (used to route unrequested replies)
   object_id_t lastTargetObjectId_{objects::NO_OBJECT};
