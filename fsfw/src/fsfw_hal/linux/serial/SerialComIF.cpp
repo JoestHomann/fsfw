@@ -119,7 +119,7 @@ int SerialComIF::configureUartPort(SerialCookie* uartCookie) {
     return fd;
   }
   
-  // --- JH START ---
+  /*// --- JH START --- (NOT NEEDED probably - leaving it for now)
   // : Assert DTR/RTS so Arduino leaves while(!Serial) like pyserial does ---
   int mstat = 0;
   if (ioctl(fd, TIOCMGET, &mstat) == 0) {
@@ -128,7 +128,7 @@ int SerialComIF::configureUartPort(SerialCookie* uartCookie) {
   }
   // If your board resets on open, a short delay can help:
   usleep(500 *1000); // 500 ms
-  // --- JH END ---
+  // --- JH END ---*/
 
   return fd;
   

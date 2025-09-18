@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iomanip>
+
 #include "commonObjects.h"
 #include "fsfw/action/ActionMessage.h"
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"
@@ -27,8 +28,10 @@ uint8_t crc8(const uint8_t* data, size_t len) {
   for (size_t i = 0; i < len; ++i) {
     crc ^= data[i];
     for (int j = 0; j < 8; ++j) {
-      if (crc & 0x80) crc = static_cast<uint8_t>((crc << 1) ^ 0x07);
-      else            crc = static_cast<uint8_t>(crc << 1);
+      if (crc & 0x80)
+        crc = static_cast<uint8_t>((crc << 1) ^ 0x07);
+      else
+        crc = static_cast<uint8_t>(crc << 1);
     }
   }
   return crc;
@@ -47,15 +50,17 @@ int findStatusFrame(const uint8_t* buf, size_t len) {
 
 #if defined(RW_VERBOSE)
 static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
-# if FSFW_CPP_OSTREAM_ENABLED == 1
+#if FSFW_CPP_OSTREAM_ENABLED == 1
   sif::warning << tag << " (" << n << "): ";
   for (size_t i = 0; i < n; ++i) {
     sif::warning << std::hex << std::setw(2) << std::setfill('0') << int(p[i]) << " ";
   }
   sif::warning << std::dec << std::endl;
-# else
-  (void)tag; (void)p; (void)n;
-# endif
+#else
+  (void)tag;
+  (void)p;
+  (void)n;
+#endif
 }
 #else
 static inline void dumpHexWarn(const char*, const uint8_t*, size_t) {}
@@ -63,18 +68,23 @@ static inline void dumpHexWarn(const char*, const uint8_t*, size_t) {}
 
 const char* cmdName(Command_t c) {
   // DATA_REPLY und DH_DIRECT_DATA können identische Codes haben (je nach FSFW)
-  if (c == ActionMessage::DATA_REPLY ||
-      c == DeviceHandlerMessage::REPLY_DIRECT_COMMAND_DATA) {
+  if (c == ActionMessage::DATA_REPLY || c == DeviceHandlerMessage::REPLY_DIRECT_COMMAND_DATA) {
     return "DATA_REPLY/DH_DIRECT_DATA";
   }
 
   switch (c) {
-    case ActionMessage::STEP_SUCCESS:       return "STEP_SUCCESS";
-    case ActionMessage::STEP_FAILED:        return "STEP_FAILED";
-    case ActionMessage::COMPLETION_SUCCESS: return "COMPLETION_SUCCESS";
-    case ActionMessage::COMPLETION_FAILED:  return "COMPLETION_FAILED";
-    case DeviceHandlerMessage::REPLY_RAW_REPLY: return "DH_RAW_REPLY";
-    default: return "UNKNOWN";
+    case ActionMessage::STEP_SUCCESS:
+      return "STEP_SUCCESS";
+    case ActionMessage::STEP_FAILED:
+      return "STEP_FAILED";
+    case ActionMessage::COMPLETION_SUCCESS:
+      return "COMPLETION_SUCCESS";
+    case ActionMessage::COMPLETION_FAILED:
+      return "COMPLETION_FAILED";
+    case DeviceHandlerMessage::REPLY_RAW_REPLY:
+      return "DH_RAW_REPLY";
+    default:
+      return "UNKNOWN";
   }
 }
 }  // namespace
@@ -92,8 +102,8 @@ ReturnValue_t RwPusService::initialize() {
   if (res != returnvalue::OK) return res;
 
   ipcStore = ObjectManager::instance()->get<StorageManagerIF>(objects::IPC_STORE);
-  tmStore  = ObjectManager::instance()->get<StorageManagerIF>(objects::TM_STORE);
-  tcStore  = ObjectManager::instance()->get<StorageManagerIF>(objects::TC_STORE);
+  tmStore = ObjectManager::instance()->get<StorageManagerIF>(objects::TM_STORE);
+  tcStore = ObjectManager::instance()->get<StorageManagerIF>(objects::TC_STORE);
 
 #if defined(RW_VERBOSE)
   if (ipcStore == nullptr) {
@@ -102,8 +112,8 @@ ReturnValue_t RwPusService::initialize() {
   }
 
   sif::warning << "RwPusService: init ok. myQ=0x" << std::hex << this->getCommandQueue()
-               << " ipc=" << ipcStore << " tm=" << tmStore << " tc=" << tcStore
-               << std::dec << std::endl;
+               << " ipc=" << ipcStore << " tm=" << tmStore << " tc=" << tcStore << std::dec
+               << std::endl;
 #endif
   if (ipcStore == nullptr) return returnvalue::FAILED;
   return returnvalue::OK;
@@ -133,8 +143,8 @@ ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t, const uint8_t* tcD
   auto* dh = ObjectManager::instance()->get<DeviceHandlerIF>(*objectId);
   if (dh == nullptr) {
 #if defined(RW_VERBOSE)
-    sif::warning << "PUS220 route: INVALID_OBJECT for objId=0x" << std::hex << *objectId
-                 << std::dec << std::endl;
+    sif::warning << "PUS220 route: INVALID_OBJECT for objId=0x" << std::hex << *objectId << std::dec
+                 << std::endl;
 #endif
     return CommandingServiceBase::INVALID_OBJECT;
   }
@@ -157,15 +167,16 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
   if (ipcStore == nullptr) return returnvalue::FAILED;
   if (tcLen < 4) return CommandingServiceBase::INVALID_TC;
 
-  const uint8_t* app    = tcData + 4;
-  const size_t   appLen = tcLen - 4;
+  const uint8_t* app = tcData + 4;
+  const size_t appLen = tcLen - 4;
 
 #if defined(RW_VERBOSE)
-  sif::warning << "PUS220 prepare: subsvc=" << int(subservice)
-               << " appLen=" << appLen << std::endl;
+  sif::warning << "PUS220 prepare: subsvc=" << int(subservice) << " appLen=" << appLen << std::endl;
 #endif
 
-  if (state) { *state = static_cast<uint32_t>(CmdState::NONE); }
+  if (state) {
+    *state = static_cast<uint32_t>(CmdState::NONE);
+  }
 
   switch (static_cast<Subservice>(subservice)) {
     case Subservice::SET_SPEED: {
@@ -179,8 +190,8 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       std::memcpy(p, &rpm, sizeof(rpm));
 
 #if defined(RW_VERBOSE)
-      sif::warning << "PUS220 prepare SET_SPEED: rpm=" << rpm
-                   << " store=0x" << std::hex << sid.raw << std::dec << std::endl;
+      sif::warning << "PUS220 prepare SET_SPEED: rpm=" << rpm << " store=0x" << std::hex << sid.raw
+                   << std::dec << std::endl;
 #endif
 
       ActionMessage::setCommand(message, 0x01 /* CMD_SET_SPEED */, sid);
@@ -195,8 +206,8 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       *p = 0x00;
 
 #if defined(RW_VERBOSE)
-      sif::warning << "PUS220 prepare STOP (with dummy store) sid=0x"
-                   << std::hex << sid.raw << std::dec << std::endl;
+      sif::warning << "PUS220 prepare STOP (with dummy store) sid=0x" << std::hex << sid.raw
+                   << std::dec << std::endl;
 #endif
 
       ActionMessage::setCommand(message, 0x02 /* CMD_STOP */, sid);
@@ -204,7 +215,9 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
     }
 
     case Subservice::STATUS: {
-      if (state) { *state = static_cast<uint32_t>(CmdState::WAIT_DATA); }
+      if (state) {
+        *state = static_cast<uint32_t>(CmdState::WAIT_DATA);
+      }
 
       store_address_t sid{};
       uint8_t* p = nullptr;
@@ -213,8 +226,8 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       *p = 0x00;
 
 #if defined(RW_VERBOSE)
-      sif::warning << "PUS220 prepare STATUS (with dummy store) sid=0x"
-                   << std::hex << sid.raw << std::dec << std::endl;
+      sif::warning << "PUS220 prepare STATUS (with dummy store) sid=0x" << std::hex << sid.raw
+                   << std::dec << std::endl;
 #endif
 
       ActionMessage::setCommand(message, 0x03 /* CMD_STATUS */, sid);
@@ -223,11 +236,11 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
 
     case Subservice::SET_MODE: {
       if (appLen < 2) return CommandingServiceBase::INVALID_TC;
-      const uint8_t mode    = app[0];
+      const uint8_t mode = app[0];
       const uint8_t submode = app[1];
 #if defined(RW_VERBOSE)
-      sif::info << "RwPusService: SET_MODE req -> mode=" << int(mode)
-                << ", sub=" << int(submode) << std::endl;
+      sif::info << "RwPusService: SET_MODE req -> mode=" << int(mode) << ", sub=" << int(submode)
+                << std::endl;
 #endif
       ModeMessage::setModeMessage(message, ModeMessage::CMD_MODE_COMMAND, mode, submode);
       return returnvalue::OK;
@@ -246,7 +259,7 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
 #if defined(RW_VERBOSE)
     sif::warning << "[PUS220 generic] invalid store address (sid invalid)" << std::endl;
 #endif
-  return returnvalue::FAILED;
+    return returnvalue::FAILED;
   }
 
   StorageManagerIF* stores[3] = {ipcStore, tmStore, tcStore};
@@ -261,20 +274,21 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
     size_t l = 0;
     auto rv = stores[i]->getData(sid, &b, &l);
 #if defined(RW_VERBOSE)
-    sif::warning << "[PUS220 generic] try "
-                 << (i == 0 ? "IPC" : (i == 1 ? "TM" : "TC"))
+    sif::warning << "[PUS220 generic] try " << (i == 0 ? "IPC" : (i == 1 ? "TM" : "TC"))
                  << " rv=" << rv << " len=" << l << std::endl;
 #endif
     if (rv == returnvalue::OK && b != nullptr && l > 0) {
-      buf = b; len = l; usedStore = stores[i];
+      buf = b;
+      len = l;
+      usedStore = stores[i];
       break;
     }
   }
 
   if (buf == nullptr || len == 0) {
 #if defined(RW_VERBOSE)
-    sif::warning << "[PUS220 generic] sid=0x" << std::hex << sid.raw
-                 << std::dec << " has no usable payload -> keep waiting" << std::endl;
+    sif::warning << "[PUS220 generic] sid=0x" << std::hex << sid.raw << std::dec
+                 << " has no usable payload -> keep waiting" << std::endl;
 #endif
     return returnvalue::FAILED;
   }
@@ -289,8 +303,8 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
   ReturnValue_t rv = returnvalue::OK;
   if (idx >= 0) {
     const uint8_t* p = buf + idx;
-    const int16_t speed   = static_cast<int16_t>((p[2] << 8) | p[3]);
-    const int16_t torque  = static_cast<int16_t>((p[4] << 8) | p[5]);
+    const int16_t speed = static_cast<int16_t>((p[2] << 8) | p[3]);
+    const int16_t torque = static_cast<int16_t>((p[4] << 8) | p[5]);
     const uint8_t running = p[6];
 
 #if defined(RW_VERBOSE)
@@ -304,16 +318,16 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
     uint8_t app[9];
     app[0] = static_cast<uint8_t>((objectId >> 24) & 0xFF);
     app[1] = static_cast<uint8_t>((objectId >> 16) & 0xFF);
-    app[2] = static_cast<uint8_t>((objectId >>  8) & 0xFF);
-    app[3] = static_cast<uint8_t>((objectId      ) & 0xFF);
-    app[4] = static_cast<uint8_t>((speed  >> 8) & 0xFF);
-    app[5] = static_cast<uint8_t>( speed        & 0xFF);
+    app[2] = static_cast<uint8_t>((objectId >> 8) & 0xFF);
+    app[3] = static_cast<uint8_t>((objectId) & 0xFF);
+    app[4] = static_cast<uint8_t>((speed >> 8) & 0xFF);
+    app[5] = static_cast<uint8_t>(speed & 0xFF);
     app[6] = static_cast<uint8_t>((torque >> 8) & 0xFF);
-    app[7] = static_cast<uint8_t>( torque       & 0xFF);
+    app[7] = static_cast<uint8_t>(torque & 0xFF);
     app[8] = running;
 
-    const auto prv = tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_STATUS),
-                                              app, sizeof(app));
+    const auto prv =
+        tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_STATUS), app, sizeof(app));
 #if defined(RW_VERBOSE)
     sif::warning << "[PUS220 generic] prepareTmPacket rv=" << prv << std::endl;
 #endif
@@ -336,8 +350,8 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
     auto delRv = usedStore->deleteData(sid);
 #if defined(RW_VERBOSE)
     if (delRv != returnvalue::OK) {
-      sif::warning << "[PUS220 generic] deleteData sid=0x" << std::hex << sid.raw
-                   << std::dec << " failed rv=" << delRv << std::endl;
+      sif::warning << "[PUS220 generic] deleteData sid=0x" << std::hex << sid.raw << std::dec
+                   << " failed rv=" << delRv << std::endl;
     }
 #endif
   }
@@ -345,53 +359,72 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
   return rv;
 }
 
-ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t,
-                                        uint32_t* state, CommandMessage*, object_id_t objectId,
-                                        bool* isStep) {
-
+ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, uint32_t* state,
+                                        CommandMessage*, object_id_t objectId, bool* isStep) {
 #if defined(RW_VERBOSE)
-  store_address_t sidAction = ActionMessage::getStoreId(reply);
-  store_address_t sidDh     = DeviceHandlerMessage::getStoreAddress(reply);
-  sif::warning << "[PUS220] inspect: sidAction=0x" << std::hex << sidAction.raw
-               << " sidDh=0x" << sidDh.raw << std::dec << std::endl;
+  store_address_t sidActionDbg = ActionMessage::getStoreId(reply);
+  store_address_t sidDhDbg = DeviceHandlerMessage::getStoreAddress(reply);
+  sif::warning << "[PUS220] inspect: sidAction=0x" << std::hex << sidActionDbg.raw << " sidDh=0x"
+               << sidDhDbg.raw << std::dec << std::endl;
 #endif
 
   const auto cmd = reply->getCommand();
+
+  // Decode our local state (WAIT_DATA means we expect a data buffer next)
   CmdState st = CmdState::NONE;
-  if (state != nullptr) st = static_cast<CmdState>(*state);
+  if (state != nullptr) {
+    st = static_cast<CmdState>(*state);
+  }
 
 #if defined(RW_VERBOSE)
-  sif::info << "RwPusService::handleReply cmd=0x" << std::hex << int(cmd)
-            << " (" << cmdName(cmd) << ")" << std::dec << std::endl;
+  sif::info << "RwPusService::handleReply cmd=0x" << std::hex << int(cmd) << " (" << cmdName(cmd)
+            << ")" << std::dec << std::endl;
   sif::warning << "[PUS220] current state=" << (st == CmdState::WAIT_DATA ? "WAIT_DATA" : "NONE")
                << std::endl;
 #endif
 
-  const bool isDataLike =
-      (cmd == ActionMessage::DATA_REPLY) ||
-      (cmd == DeviceHandlerMessage::REPLY_DIRECT_COMMAND_DATA) ||
-      (cmd == DeviceHandlerMessage::REPLY_RAW_REPLY);
+  // Treat any of these as "data-like" replies carrying a store address
+  const bool isDataLike = (cmd == ActionMessage::DATA_REPLY) ||
+                          (cmd == DeviceHandlerMessage::REPLY_DIRECT_COMMAND_DATA) ||
+                          (cmd == DeviceHandlerMessage::REPLY_RAW_REPLY);
 
   if (isDataLike) {
-    store_address_t sidAction2 = ActionMessage::getStoreId(reply);
-    store_address_t sidDh2     = DeviceHandlerMessage::getStoreAddress(reply);
-    const store_address_t sid = (sidAction2.raw != StorageManagerIF::INVALID_ADDRESS) ? sidAction2
-                                                                                      : sidDh2;
+    // Prefer Action store id, fall back to DeviceHandler store id
+    const store_address_t sidAction = ActionMessage::getStoreId(reply);
+    const store_address_t sidDh = DeviceHandlerMessage::getStoreAddress(reply);
+    const store_address_t sid =
+        (sidAction.raw != StorageManagerIF::INVALID_ADDRESS) ? sidAction : sidDh;
 
 #if defined(RW_VERBOSE)
     sif::warning << "[PUS220] data-like reply, sid=0x" << std::hex << sid.raw << std::dec
-                 << " -> try to parse" << std::endl;
+                 << " -> parsing" << std::endl;
 #endif
+
+    if (sid.raw == StorageManagerIF::INVALID_ADDRESS) {
+      // No usable payload yet: keep the command open if we are waiting for data
+      if (st == CmdState::WAIT_DATA) {
+#if defined(RW_VERBOSE)
+        sif::warning << "[PUS220] data-like reply without valid store id -> keep waiting"
+                     << std::endl;
+#endif
+        if (isStep) *isStep = true;  // progress without completion
+        return returnvalue::OK;
+      }
+      return returnvalue::OK;
+    }
 
     const auto rv = handleDataReplyAndEmitTm(sid, objectId);
     if (rv == returnvalue::OK) {
-      if (state) *state = static_cast<uint32_t>(CmdState::NONE);
+      // We received and emitted the expected TM -> close the command cleanly
+      if (state) {
+        *state = static_cast<uint32_t>(CmdState::NONE);
+      }
       return CommandingServiceBase::EXECUTION_COMPLETE;
     } else {
+      // Data present but could not be parsed yet; keep waiting if appropriate
       if (st == CmdState::WAIT_DATA) {
 #if defined(RW_VERBOSE)
-        sif::warning << "[PUS220] data-like reply without usable payload -> keep waiting"
-                     << std::endl;
+        sif::warning << "[PUS220] payload present but not usable -> keep WAIT_DATA" << std::endl;
 #endif
         if (isStep) *isStep = true;
         return returnvalue::OK;
@@ -400,21 +433,25 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t,
     }
   }
 
+  // Control-only replies (no data buffer). Keep the command open while waiting for data.
   switch (cmd) {
     case ActionMessage::STEP_SUCCESS:
+      // Step progressed; if expecting data, do not close yet.
       if (isStep) *isStep = true;
       if (st == CmdState::WAIT_DATA) {
 #if defined(RW_VERBOSE)
-        sif::warning << "[PUS220] keeping command OPEN (waiting for DATA with store id)" << std::endl;
+        sif::warning << "[PUS220] STEP_SUCCESS while WAIT_DATA -> keep command open" << std::endl;
 #endif
         return returnvalue::OK;
       }
       return returnvalue::OK;
 
     case ActionMessage::COMPLETION_SUCCESS:
+      // Only complete if we are not waiting for a data buffer anymore
       if (st == CmdState::WAIT_DATA) {
 #if defined(RW_VERBOSE)
-        sif::warning << "[PUS220] STILL waiting for DATA, not closing yet" << std::endl;
+        sif::warning << "[PUS220] COMPLETION_SUCCESS but STILL WAIT_DATA -> not closing yet"
+                     << std::endl;
 #endif
         return returnvalue::OK;
       }
@@ -429,9 +466,10 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t,
 
     default:
 #if defined(RW_VERBOSE)
-      sif::warning << "[PUS220] unhandled control reply; cmd=0x" << std::hex << int(cmd)
-                   << std::dec << std::endl;
+      sif::warning << "[PUS220] unhandled control reply; cmd=0x" << std::hex << int(cmd) << std::dec
+                   << std::endl;
 #endif
+      // Keep the sequence alive if we still expect data
       if (st == CmdState::WAIT_DATA) {
         if (isStep) *isStep = true;
         return returnvalue::OK;
@@ -443,22 +481,21 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t,
 void RwPusService::handleUnrequestedReply(CommandMessage* reply) {
   const auto cmd = reply->getCommand();
 #if defined(RW_VERBOSE)
-  sif::warning << "RwPusService::handleUnrequestedReply cmd=0x"
-               << std::hex << int(cmd) << " (" << cmdName(cmd) << ")"
-               << std::dec << std::endl;
+  sif::warning << "RwPusService::handleUnrequestedReply cmd=0x" << std::hex << int(cmd) << " ("
+               << cmdName(cmd) << ")" << std::dec << std::endl;
 #endif
 
   // Versuche, einen Store-Address aus beiden Formaten zu holen
   store_address_t sidAction = ActionMessage::getStoreId(reply);
-  store_address_t sidDh     = DeviceHandlerMessage::getStoreAddress(reply);
+  store_address_t sidDh = DeviceHandlerMessage::getStoreAddress(reply);
 
   if (sidAction.raw != StorageManagerIF::INVALID_ADDRESS ||
-      sidDh.raw     != StorageManagerIF::INVALID_ADDRESS) {
+      sidDh.raw != StorageManagerIF::INVALID_ADDRESS) {
     const auto sid = (sidAction.raw != StorageManagerIF::INVALID_ADDRESS) ? sidAction : sidDh;
 #if defined(RW_VERBOSE)
-    sif::warning << "[PUS220] UNREQUESTED: treating message as DATA (sid=0x"
-                 << std::hex << sid.raw << std::dec << "), object=0x"
-                 << std::hex << lastTargetObjectId_ << std::dec << std::endl;
+    sif::warning << "[PUS220] UNREQUESTED: treating message as DATA (sid=0x" << std::hex << sid.raw
+                 << std::dec << "), object=0x" << std::hex << lastTargetObjectId_ << std::dec
+                 << std::endl;
 #endif
     (void)handleDataReplyAndEmitTm(sid, lastTargetObjectId_);
   } else {

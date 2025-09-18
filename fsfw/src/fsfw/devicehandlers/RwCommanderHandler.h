@@ -73,6 +73,10 @@ class RwCommanderHandler : public DeviceHandlerBase {
                               const uint8_t* data, size_t size) override;
 
  private:
+
+ // Drains UART RX quickly in a non-blocking fashion to drop stale bytes
+ ReturnValue_t drainRxNow();
+
   // Compact CRC8 helper (same polynomial as device)
   static uint8_t crc8(const uint8_t* data, size_t len);
 
