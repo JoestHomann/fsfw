@@ -2,9 +2,12 @@
 
 #include "fsfw/tmtcservices/CommandingServiceBase.h"
 #include "fsfw/storagemanager/StorageManagerIF.h"
+#include "fsfw/storagemanager/storeAddress.h"
+#include "commonObjects.h"
 
 /**
  * Minimal PUS service for a reaction wheel commander.
+ *
  * Subservices:
  *   1 = SET_SPEED (int16 RPM, big-endian in AppData)
  *   2 = STOP
@@ -45,15 +48,18 @@ class RwPusService : public CommandingServiceBase {
                             uint32_t* state, CommandMessage* next, object_id_t objectId,
                             bool* isStep) override;
 
+  // Parses RW status payload from store and emits TM_STATUS.
   ReturnValue_t handleDataReplyAndEmitTm(store_address_t sid, object_id_t objectId);
 
+  // Handle late/unrequested data replies by trying to parse & emit TM.
   void handleUnrequestedReply(CommandMessage* reply) override;
 
  private:
+  // Stores (resolved in initialize())
   StorageManagerIF* ipcStore = nullptr;
   StorageManagerIF* tmStore  = nullptr;
   StorageManagerIF* tcStore  = nullptr;
 
+  // Last addressed RW object (used to route unrequested replies)
   object_id_t lastTargetObjectId_{objects::NO_OBJECT};
-
 };
