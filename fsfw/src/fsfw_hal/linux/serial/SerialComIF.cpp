@@ -11,12 +11,11 @@
 #include "fsfw/serviceinterface.h"
 #include "fsfw_hal/linux/utility.h"
 
-// --- JH START ---
-#include <sys/ioctl.h>  // Needed to assert DTR/RTS: TIOCMGET, TIOCMSET, TIOCM_DTR, TIOCM_RTS
-// --- JH END ---
 
 // Debug On/Off switch for RW (set to 1 to enable debug output):
-#define RW_VERBOSE 0
+#ifndef RW_SERIAL_VERBOSE
+#define RW_SERIAL_VERBOSE 0
+#endif
 
 SerialComIF::SerialComIF(object_id_t objectId) : SystemObject(objectId) {}
 
@@ -118,17 +117,6 @@ int SerialComIF::configureUartPort(SerialCookie* uartCookie) {
 #endif
     return fd;
   }
-
-  /*// --- JH START --- (NOT NEEDED probably - leaving it for now)
-  // : Assert DTR/RTS so Arduino leaves while(!Serial) like pyserial does ---
-  int mstat = 0;
-  if (ioctl(fd, TIOCMGET, &mstat) == 0) {
-    mstat |= TIOCM_DTR | TIOCM_RTS;         // raise DTR & RTS
-    (void)ioctl(fd, TIOCMSET, &mstat);
-  }
-  // If your board resets on open, a short delay can help:
-  usleep(500 *1000); // 500 ms
-  // --- JH END ---*/
 
   return fd;
 }
@@ -236,7 +224,7 @@ ReturnValue_t SerialComIF::sendMessage(CookieIF* cookie, const uint8_t* sendData
   }
 
 // ---------- JH START DEBUG ------------
-#if RW_VERBOSE
+#if RW_SERIAL_VERBOSE
   sif::info << "SerialComIF: write " << sendLen << " bytes" << std::endl;
   for (size_t i = 0; i < sendLen; i++) {
     sif::info << std::hex << int(sendData[i]) << " ";
@@ -407,7 +395,7 @@ ReturnValue_t SerialComIF::readReceivedMessage(CookieIF* cookie, uint8_t** buffe
   uartDeviceMapIter->second.replyLen = 0;
 
 // ---------- JH START DEBUG ------------
-#if RW_VERBOSE
+#if RW_SERIAL_VERBOSE
   if (*size > 0) {
     sif::info << "SerialComIF: read " << *size << " bytes" << std::endl;
     for (size_t i = 0; i < *size; i++) {
