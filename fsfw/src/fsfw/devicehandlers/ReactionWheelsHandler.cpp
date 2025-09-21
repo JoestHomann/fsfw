@@ -32,17 +32,13 @@ static inline void dumpHexWarn(const char*, const uint8_t*, size_t) {}
 ReactionWheelsHandler::ReactionWheelsHandler(object_id_t objectId, object_id_t comIF,
                                              CookieIF* cookie)
     : DeviceHandlerBase(objectId, comIF, cookie) {
-  // Configure optional receive-size FIFO and initialize the shared ring buffer.
+  // Optional receive-size FIFO and shared ring buffer.
   rxRing.setToUseReceiveSizeFIFO(/*fifoDepth*/ 8);
   (void)rxRing.initialize();
 }
 
 void ReactionWheelsHandler::doStartUp() {
-  // Give the device a brief warm-up period before entering NORMAL
-  if (warmupCnt < warmupCycles) {
-    ++warmupCnt;
-    return;
-  }
+  // Direkt in NORMAL gehen (kein Warmup nötig im Hosted/Arduino-Sim)
   sif::info << "ReactionWheelsHandler: doStartUp()" << std::endl;
   setMode(MODE_NORMAL);
 }
@@ -61,8 +57,7 @@ void ReactionWheelsHandler::modeChanged() {
 }
 
 // Helper: Drain UART RX until no more bytes are immediately available (drop).
-// Hinweis: Diese Funktion wird *nicht* direkt vor TC-getriebenem STATUS-Poll aufgerufen,
-// damit wir keine frischen Replies verwerfen.
+// Hinweis: Nicht direkt vor TC-getriebenem STATUS-Poll verwenden, um Replys nicht zu verwerfen.
 ReturnValue_t ReactionWheelsHandler::drainRxNow() {
   if (communicationInterface == nullptr || comCookie == nullptr) {
     return returnvalue::OK;
@@ -159,18 +154,7 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
     return returnvalue::OK;
   }
 
-  // 2) Snooze only if no TC-driven STATUS is pending.
-  if (pollSnooze > 0) {
-    --pollSnooze;
-#if RW_VERBOSE
-    sif::warning << "buildNormalDeviceCommand: pollSnooze>0 -> NO_COMMAND (snooze left="
-                 << pollSnooze << ")" << std::endl;
-#endif
-    *id = DeviceHandlerIF::NO_COMMAND_ID;
-    return NOTHING_TO_SEND;
-  }
-
-  // 3) Periodic STATUS poll
+  // 2) Periodic STATUS poll (optional)
   if (++statusPollCnt >= statusPollDivider) {
     statusPollCnt = 0;
 
@@ -187,7 +171,7 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
     return returnvalue::OK;
   }
 
-  // 4) Nothing to send this cycle
+  // 3) Nothing to send this cycle
   *id = DeviceHandlerIF::NO_COMMAND_ID;
   return NOTHING_TO_SEND;
 }
@@ -206,7 +190,6 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       }
       int16_t rpm = 0;
       std::memcpy(&rpm, data, sizeof(rpm));
-      lastTargetRpm = rpm;
 
       const size_t total = RwProtocol::buildSetSpeed(txBuf, sizeof(txBuf), rpm);
       if (total == 0) {
@@ -217,7 +200,6 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       rawPacketLen = total;
 
       dumpHexWarn("DH TX (TC frame: SET_SPEED)", txBuf, total);
-      pollSnooze = POLL_SNOOZE_CYCLES;  // short backoff after TC
       return returnvalue::OK;
     }
 
@@ -231,7 +213,6 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       rawPacketLen = total;
 
       dumpHexWarn("DH TX (TC frame: STOP)", txBuf, total);
-      pollSnooze = POLL_SNOOZE_CYCLES;
       return returnvalue::OK;
     }
 
@@ -246,7 +227,6 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       rawPacketLen = total;
 
       dumpHexWarn("DH TX (TC frame: STATUS)", txBuf, total);
-      pollSnooze = POLL_SNOOZE_CYCLES;
       return returnvalue::OK;
     }
 
@@ -404,9 +384,12 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   return returnvalue::OK;
 }
 
-uint32_t ReactionWheelsHandler::getTransitionDelayMs(Mode_t /*from*/, Mode_t /*to*/) { //DELETE???
-  return 6000;
+uint32_t ReactionWheelsHandler::getTransitionDelayMs(Mode_t from, Mode_t to) {
+  if (from == MODE_OFF && to == MODE_ON)     return RW_DELAY_OFF_TO_ON_MS;
+  if (from == MODE_ON  && to == MODE_NORMAL) return RW_DELAY_ON_TO_NORMAL_MS;
+  return 0;
 }
+
 
 ReturnValue_t ReactionWheelsHandler::initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
                                                              LocalDataPoolManager&) {
@@ -426,10 +409,9 @@ ReturnValue_t ReactionWheelsHandler::executeAction(ActionId_t actionId,
 
   const auto cmd = static_cast<DeviceCommandId_t>(actionId);
   if (cmd == CMD_STATUS) {
-    // Remember requester, snooze polls briefly, and trigger next poll immediately
+    // Remember requester and trigger next poll immediately
     pendingTcStatusTm = true;
     pendingTcStatusReportedTo = commandedBy;
-    pollSnooze = POLL_SNOOZE_CYCLES;
   }
   return DeviceHandlerBase::executeAction(actionId, commandedBy, data, size);
 }

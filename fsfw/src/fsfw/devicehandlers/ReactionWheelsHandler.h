@@ -51,7 +51,9 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
                              size_t* foundLen) override;
 
   ReturnValue_t interpretDeviceReply(DeviceCommandId_t id, const uint8_t* packet) override;
-
+  
+  static constexpr uint32_t RW_DELAY_OFF_TO_ON_MS    = 100;
+  static constexpr uint32_t RW_DELAY_ON_TO_NORMAL_MS = 100;
   uint32_t getTransitionDelayMs(Mode_t from, Mode_t to) override;
 
   ReturnValue_t initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
@@ -71,16 +73,9 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   // Compact TX buffer for all commands (STATUS/SET/STOP are 6 bytes with CRC-16)
   uint8_t txBuf[RwProtocol::CMD_LEN] = {};
 
-  // Simple warm-up before entering NORMAL
-  uint32_t warmupCnt{0}; // DELETE???
-  static constexpr uint32_t warmupCycles{2};
-
   // Periodic polling divider (incremented each PST cycle)
   uint32_t statusPollCnt{0};
   static constexpr uint32_t statusPollDivider{100};
-
-  // Short backoff ticks after TC to avoid immediate re-poll
-  uint32_t pollSnooze{0}; // DELETE???
 
   // Set true when a TC STATUS has been issued; next valid frame will be routed as DATA_REPLY
   bool pendingTcStatusTm{false};
@@ -90,9 +85,6 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
 
   // Most recent raw reply (9-byte wire frame with CRC-16)
   RwReplySet replySet{this};
-
-  // Last commanded target RPM (for reference/diagnostics)
-  int16_t lastTargetRpm{0}; // DELETE???
 
   // --- RX ring buffer (thread-safe) ----------------------------------------
   // Using external storage to avoid dynamic allocation.
@@ -104,11 +96,7 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
                           /*maxExcessBytes*/ RwProtocol::STATUS_LEN - 1};
 };
 
-// Debug/trace compile-time switches
+// Debug On/Off switch (set to 1 to enable debug output)
 #ifndef RW_VERBOSE
-#define RW_VERBOSE 1
-#endif
-
-#ifndef POLL_SNOOZE_CYCLES
-#define POLL_SNOOZE_CYCLES 3 // Delete???
+#define RW_VERBOSE 0
 #endif
