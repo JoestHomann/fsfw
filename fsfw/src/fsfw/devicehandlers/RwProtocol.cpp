@@ -1,13 +1,16 @@
 #include "RwProtocol.h"
 
-#include <fsfw/globalfunctions/CRC.h>  // Use FSFW CRC-16/CCITT implementation
+#include <fsfw/globalfunctions/CRC.h>  // FSFW CRC-16/CCITT
 
-// Note: We intentionally keep packing explicit to be compatible across FSFW versions.
 // Wire format is big-endian.
 
 namespace {
 inline uint16_t be_load16(const uint8_t* p) {
   return static_cast<uint16_t>(p[0] << 8) | static_cast<uint16_t>(p[1]);
+}
+inline void be_store16(uint8_t* hi, uint8_t* lo, uint16_t v) {
+  *hi = static_cast<uint8_t>((v >> 8) & 0xFF);
+  *lo = static_cast<uint8_t>( v       & 0xFF);
 }
 }  // namespace
 
@@ -21,9 +24,8 @@ size_t RwProtocol::buildSetSpeed(uint8_t* out, size_t cap, int16_t rpm) {
   out[2] = static_cast<uint8_t>((rpm >> 8) & 0xFF);
   out[3] = static_cast<uint8_t>( rpm       & 0xFF);
 
-  const uint16_t crc = CRC::crc16ccitt(out, 4);
-  out[4] = static_cast<uint8_t>((crc >> 8) & 0xFF);
-  out[5] = static_cast<uint8_t>( crc       & 0xFF);
+  const uint16_t crc = CRC::crc16ccitt(out, CMD_LEN - 2);
+  be_store16(&out[4], &out[5], crc);
   return CMD_LEN;
 }
 
@@ -37,9 +39,8 @@ size_t RwProtocol::buildStop(uint8_t* out, size_t cap) {
   out[2] = 0x00;
   out[3] = 0x00;
 
-  const uint16_t crc = CRC::crc16ccitt(out, 4);
-  out[4] = static_cast<uint8_t>((crc >> 8) & 0xFF);
-  out[5] = static_cast<uint8_t>( crc       & 0xFF);
+  const uint16_t crc = CRC::crc16ccitt(out, CMD_LEN - 2);
+  be_store16(&out[4], &out[5], crc);
   return CMD_LEN;
 }
 
@@ -53,14 +54,13 @@ size_t RwProtocol::buildStatusReq(uint8_t* out, size_t cap) {
   out[2] = 0x00;
   out[3] = 0x00;
 
-  const uint16_t crc = CRC::crc16ccitt(out, 4);
-  out[4] = static_cast<uint8_t>((crc >> 8) & 0xFF);
-  out[5] = static_cast<uint8_t>( crc       & 0xFF);
+  const uint16_t crc = CRC::crc16ccitt(out, CMD_LEN - 2);
+  be_store16(&out[4], &out[5], crc);
   return CMD_LEN;
 }
 
 bool RwProtocol::verifyCrc16(const uint8_t* buf, size_t totalLen) {
-  if (buf == nullptr || totalLen < 2) {
+  if (buf == nullptr || totalLen < 3) {  // at least 1 payload byte + 2 CRC bytes
     return false;
   }
   const size_t dataLen = totalLen - 2;

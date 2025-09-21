@@ -11,18 +11,17 @@
 #include "fsfw/returnvalues/returnvalue.h"
 #include "fsfw/container/SharedRingBuffer.h"
 
-#include "fsfw/parameters/HasParametersIF.h"
 #include "fsfw/parameters/ParameterHelper.h"
 #include "fsfw/parameters/ParameterWrapper.h"
 
-class ReactionWheelsHandler : public DeviceHandlerBase {  // <= remove direct HasParametersIF
+class ReactionWheelsHandler : public DeviceHandlerBase {
  public:
   // Internal command IDs
   enum DeviceCmd : DeviceCommandId_t {
     CMD_SET_SPEED   = 0x01,
     CMD_STOP        = 0x02,
     CMD_STATUS      = 0x03,        // action-driven request (same wire frame as poll)
-    CMD_STATUS_POLL = 0x1003       // device command used for periodic and TC-driven polls
+    CMD_STATUS_POLL = 0x1003       // used for periodic and TC-driven polls
   };
 
   // Unified internal reply ID
@@ -108,7 +107,7 @@ class ReactionWheelsHandler : public DeviceHandlerBase {  // <= remove direct Ha
   ReturnValue_t executeAction(ActionId_t actionId, MessageQueueId_t commandedBy,
                               const uint8_t* data, size_t size) override;
 
-  // Parameters (still override; HasParametersIF comes via DeviceHandlerBase)
+  // Parameters (override from HasParametersIF via DeviceHandlerBase)
   ReturnValue_t getParameter(uint8_t domainId, uint8_t parameterId,
                              ParameterWrapper* parameterWrapper,
                              const ParameterWrapper* newValues,
@@ -119,8 +118,7 @@ class ReactionWheelsHandler : public DeviceHandlerBase {  // <= remove direct Ha
   ReturnValue_t drainRxNow();
   // Pull bytes into the ring buffer (non-blocking, thread-safe)
   ReturnValue_t drainRxIntoRing();
-
-  // Report protocol issues (CRC/invalid IDs) — member so we can call triggerEvent (protected)
+  // Report protocol issues (CRC/invalid IDs) as member to access triggerEvent()
   void reportProtocolIssuesInWindow(const uint8_t* buf, size_t n);
 
   // TX buffer for all commands (STATUS/SET/STOP are 6 bytes incl. CRC16)

@@ -58,8 +58,7 @@ void ReactionWheelsHandler::modeChanged() {
             << " (sub=" << static_cast<int>(s) << ")" << std::endl;
 }
 
-// Quickly drop stale bytes. Do not call right before a TC-driven STATUS poll,
-// otherwise you might discard a fresh reply.
+// Quickly drop stale bytes. Use with care to not drop fresh replies.
 ReturnValue_t ReactionWheelsHandler::drainRxNow() {
   if (communicationInterface == nullptr || comCookie == nullptr) {
     return returnvalue::OK;
@@ -84,19 +83,20 @@ ReturnValue_t ReactionWheelsHandler::drainRxNow() {
   return returnvalue::OK;
 }
 
-// Pull available bytes into the shared ring buffer (non-blocking)
+// Pull available bytes into the shared ring buffer (now: "drain until empty")
 ReturnValue_t ReactionWheelsHandler::drainRxIntoRing() {
   if (communicationInterface == nullptr || comCookie == nullptr) {
     return returnvalue::OK;
   }
-  for (int i = 0; i < 4; ++i) {
+  while (true) {
     (void)rxRing.lockRingBufferMutex(MutexIF::TimeoutType::WAITING, /*timeout ms*/ 2);
     const size_t freeSpace = rxRing.availableWriteSpace();
     if (freeSpace == 0) {
       (void)rxRing.unlockRingBufferMutex();
       break;
     }
-    const size_t chunk = (freeSpace < 64) ? freeSpace : size_t(64);
+    // Use moderately sized chunks to speed up draining while avoiding backend warnings.
+    const size_t chunk = (freeSpace < 128) ? freeSpace : size_t(128);
     ReturnValue_t req = communicationInterface->requestReceiveMessage(comCookie, chunk);
     if (req != returnvalue::OK) {
       (void)rxRing.unlockRingBufferMutex();
@@ -136,6 +136,9 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
     sif::warning << "buildNormalDeviceCommand: tcStatusPending=true -> immediate STATUS poll"
                  << std::endl;
 #endif
+    // Flush any stale frames so the next one is guaranteed to belong to this poll.
+    (void)drainRxNow();
+
     const size_t total = RwProtocol::buildStatusReq(txBuf, sizeof(txBuf));
     if (total == 0) {
       *id = DeviceHandlerIF::NO_COMMAND_ID;
@@ -248,7 +251,7 @@ void ReactionWheelsHandler::fillCommandAndReplyMap() {
   insertInCommandMap(CMD_STATUS, false, 0);
 }
 
-// Report protocol issues (CRC, invalid reply IDs) as a member method so we can use triggerEvent()
+// Report protocol issues (CRC, invalid reply IDs)
 void ReactionWheelsHandler::reportProtocolIssuesInWindow(const uint8_t* buf, size_t n) {
   if (buf == nullptr || n < 2) return;
   for (size_t i = 0; i + 1 < n; ++i) {
