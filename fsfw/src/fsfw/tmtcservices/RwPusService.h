@@ -17,6 +17,9 @@
  * AppData convention (all TCs):
  *   [0..3]  Destination object ID (big-endian)
  *   [4..]   Subservice-specific payload
+ *
+ * Note: Device reply on the wire is STATUS_LEN bytes with CRC-16/CCITT:
+ *   [AB,10,spdH,spdL,torH,torL,running,crcH,crcL]
  */
 class RwPusService : public CommandingServiceBase {
  public:

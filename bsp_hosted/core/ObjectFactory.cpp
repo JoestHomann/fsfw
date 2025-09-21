@@ -102,20 +102,20 @@ void ObjectFactory::produce(void* args) {
   // --- JH: ReactionWheelsHandler (minimal serial commander)
 (void) new SerialComIF(objects::RW_SERIAL_COM_IF);  // SystemObject registers itself
 
-auto* rwCmdCookie = new SerialCookie(
+auto* rwCookie = new SerialCookie(
     objects::RW_HANDLER,
     "/dev/ttyACM0",                // ggf. anpassen
     UartBaudRate::RATE_9600,
     1024,
     UartModes::NON_CANONICAL);
 
-rwCmdCookie->setReadCycles(5);      // allow up to 5 read() attempts per GET_READ phase
-rwCmdCookie->setToFlushInput(true); // optional: flush stale bytes after opening port
+rwCookie->setReadCycles(5);      // allow up to 5 read() attempts per GET_READ phase
+rwCookie->setToFlushInput(true); // optional: flush stale bytes after opening port
 
-auto* rwCmdHandler =
+auto* rwHandler =
     new ReactionWheelsHandler(objects::RW_HANDLER,
                            objects::RW_SERIAL_COM_IF,
-                           rwCmdCookie);
+                           rwCookie);
 
   // ---------------- RwPusService (PUS-220) --------------------
   // If you already have a common TM/TC services task, simply addComponent(rwPus) there.

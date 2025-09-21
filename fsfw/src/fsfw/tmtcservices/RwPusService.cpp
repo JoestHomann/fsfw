@@ -3,6 +3,7 @@
 #include <cstring>
 #include <iomanip>
 
+#include "fsfw/devicehandlers/RwProtocol.h"  // Shared protocol helpers (CRC-16, IDs, STATUS_LEN)
 #include "commonObjects.h"
 #include "fsfw/action/ActionMessage.h"
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"
@@ -20,32 +21,22 @@
 #define RW_PUS_VERBOSE 0
 #endif
 
-
-// ---------- helpers (anonymous namespace) ----------
 namespace {
 
 inline uint32_t be32(const uint8_t* p) {
   return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
 }
 
-// Same CRC8 as the device / DH
-uint8_t crc8(const uint8_t* data, size_t len) {
-  uint8_t crc = 0x00;
-  for (size_t i = 0; i < len; ++i) {
-    crc ^= data[i];
-    for (int j = 0; j < 8; ++j) {
-      crc = (crc & 0x80) ? static_cast<uint8_t>((crc << 1) ^ 0x07) : static_cast<uint8_t>(crc << 1);
-    }
-  }
-  return crc;
-}
-
-// Search for an 8-byte frame: AB 10 <spdH spdL> <torH torL> <running> <crc>
-int findStatusFrame(const uint8_t* buf, size_t len) {
-  if (len < 8) return -1;
-  for (size_t i = 0; i + 7 < len; ++i) {
-    if (buf[i] == 0xAB && buf[i + 1] == 0x10) {
-      if (crc8(buf + i, 7) == buf[i + 7]) return static_cast<int>(i);
+// Find a STATUS frame with CRC-16/CCITT (RwProtocol::STATUS_LEN bytes).
+// Layout: [AB, 10, spdH, spdL, torH, torL, running, crcH, crcL]
+int findStatusFrameCrc16(const uint8_t* buf, size_t len) {
+  if (len < RwProtocol::STATUS_LEN) return -1;
+  for (size_t i = 0; i + (RwProtocol::STATUS_LEN - 1) < len; ++i) {
+    if (buf[i] == RwProtocol::START_REPLY &&
+        buf[i + 1] == static_cast<uint8_t>(RwProtocol::RespId::STATUS)) {
+      if (RwProtocol::verifyCrc16(buf + i, RwProtocol::STATUS_LEN)) {
+        return static_cast<int>(i);
+      }
     }
   }
   return -1;
@@ -60,9 +51,7 @@ static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
   }
   sif::warning << std::dec << std::endl;
 #else
-  (void)tag;
-  (void)p;
-  (void)n;
+  (void)tag; (void)p; (void)n;
 #endif
 }
 #else
@@ -93,8 +82,6 @@ inline const char* cmdName(Command_t c) {
 // Minimal per-command state
 enum class CmdState : uint32_t { NONE = 0, WAIT_DATA = 1 };
 
-// ---------- class implementation ----------
-
 RwPusService::RwPusService(object_id_t objectId, uint16_t apid, uint8_t serviceId,
                            uint8_t numParallelCommands, uint16_t commandTimeoutSeconds)
     : CommandingServiceBase(objectId, apid, "PUS 220 RW CMD", serviceId, numParallelCommands,
@@ -105,8 +92,8 @@ ReturnValue_t RwPusService::initialize() {
   if (res != returnvalue::OK) return res;
 
   ipcStore = ObjectManager::instance()->get<StorageManagerIF>(objects::IPC_STORE);
-  tmStore = ObjectManager::instance()->get<StorageManagerIF>(objects::TM_STORE);
-  tcStore = ObjectManager::instance()->get<StorageManagerIF>(objects::TC_STORE);
+  tmStore  = ObjectManager::instance()->get<StorageManagerIF>(objects::TM_STORE);
+  tcStore  = ObjectManager::instance()->get<StorageManagerIF>(objects::TC_STORE);
 
 #if RW_PUS_VERBOSE
   if (ipcStore == nullptr) {
@@ -285,49 +272,44 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
   }
 
   dumpHexWarn("[PUS220 generic] head", buf, (len < 32 ? len : size_t(32)));
-  const int idx = findStatusFrame(buf, len);
+  const int idx = findStatusFrameCrc16(buf, len);
 #if RW_PUS_VERBOSE
-  sif::warning << "[PUS220 generic] findStatusFrame idx=" << idx << " (len=" << len << ")"
+  sif::warning << "[PUS220 generic] findStatusFrameCrc16 idx=" << idx << " (len=" << len << ")"
                << std::endl;
 #endif
 
   ReturnValue_t rv = returnvalue::OK;
   if (idx >= 0) {
-    const uint8_t* p = buf + idx;
-    const int16_t speed = static_cast<int16_t>((p[2] << 8) | p[3]);
-    const int16_t torque = static_cast<int16_t>((p[4] << 8) | p[5]);
-    const uint8_t running = p[6];
+    RwProtocol::Status st{};
+    const bool ok = RwProtocol::parseStatus(buf + idx, RwProtocol::STATUS_LEN, st);
+    if (!ok) {
+      rv = returnvalue::FAILED;
+    } else {
+      // AppData: [object_id(4) | speed(2) | torque(2) | running(1)] => 9 bytes
+      uint8_t app[9];
+      app[0] = static_cast<uint8_t>((objectId >> 24) & 0xFF);
+      app[1] = static_cast<uint8_t>((objectId >> 16) & 0xFF);
+      app[2] = static_cast<uint8_t>((objectId >> 8) & 0xFF);
+      app[3] = static_cast<uint8_t>(objectId & 0xFF);
+      app[4] = static_cast<uint8_t>((st.speedRpm >> 8) & 0xFF);
+      app[5] = static_cast<uint8_t>( st.speedRpm       & 0xFF);
+      app[6] = static_cast<uint8_t>((st.torqueMnM >> 8) & 0xFF);
+      app[7] = static_cast<uint8_t>( st.torqueMnM       & 0xFF);
+      app[8] = st.running;
 
+      const auto prv =
+          tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_STATUS), app, sizeof(app));
 #if RW_PUS_VERBOSE
-    if (running > 1) {
-      sif::warning << "[PUS220 generic] 'running' flag suspicious: " << int(running)
-                   << " (expected 0/1)" << std::endl;
+      sif::warning << "[PUS220 generic] prepareTmPacket rv=" << prv << std::endl;
+#endif
+      rv = (prv == returnvalue::OK) ? tmHelper.storeAndSendTmPacket() : prv;
+#if RW_PUS_VERBOSE
+      sif::warning << "[PUS220 generic] storeAndSend rv=" << rv << std::endl;
+#endif
     }
-#endif
-    // AppData: [object_id(4) | speed(2) | torque(2) | running(1)]
-    uint8_t app[9];
-    app[0] = static_cast<uint8_t>((objectId >> 24) & 0xFF);
-    app[1] = static_cast<uint8_t>((objectId >> 16) & 0xFF);
-    app[2] = static_cast<uint8_t>((objectId >> 8) & 0xFF);
-    app[3] = static_cast<uint8_t>(objectId & 0xFF);
-    app[4] = static_cast<uint8_t>((speed >> 8) & 0xFF);
-    app[5] = static_cast<uint8_t>(speed & 0xFF);
-    app[6] = static_cast<uint8_t>((torque >> 8) & 0xFF);
-    app[7] = static_cast<uint8_t>(torque & 0xFF);
-    app[8] = running;
-
-    const auto prv =
-        tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_STATUS), app, sizeof(app));
-#if RW_PUS_VERBOSE
-    sif::warning << "[PUS220 generic] prepareTmPacket rv=" << prv << std::endl;
-#endif
-    rv = (prv == returnvalue::OK) ? tmHelper.storeAndSendTmPacket() : prv;
-#if RW_PUS_VERBOSE
-    sif::warning << "[PUS220 generic] storeAndSend rv=" << rv << std::endl;
-#endif
   } else {
 #if RW_PUS_VERBOSE
-    sif::warning << "[PUS220 generic] no AB 10 .. .. .. .. .. CRC frame in payload" << std::endl;
+    sif::warning << "[PUS220 generic] no AB 10 .. .. .. .. .. CRC16 frame in payload" << std::endl;
 #endif
     rv = returnvalue::FAILED;
   }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "fsfw/devicehandlers/RwProtocol.h"
+
 #include "fsfw/datapoollocal/LocalDataPoolManager.h"
 #include "fsfw/datapoollocal/LocalDataSet.h"
 #include "fsfw/datapoollocal/LocalPoolVector.h"
@@ -9,17 +11,12 @@
 
 class ReactionWheelsHandler : public DeviceHandlerBase {
  public:
-  // On-wire constants
-  static constexpr uint8_t START_BYTE_CMD = 0xAA;
-  static constexpr uint8_t START_BYTE_REPLY = 0xAB;
-  static constexpr uint8_t REPLY_STATUS_WIRE = 0x10;
-
-  // Internal command IDs
+  // Internal command IDs (DeviceHandlerBase interface)
   enum DeviceCmd : DeviceCommandId_t {
-    CMD_SET_SPEED = 0x01,
-    CMD_STOP = 0x02,
-    CMD_STATUS = 0x03,        // action-driven request (same wire frame)
-    CMD_STATUS_POLL = 0x1003  // device command used for both periodic and TC-driven polls
+    CMD_SET_SPEED   = 0x01,
+    CMD_STOP        = 0x02,
+    CMD_STATUS      = 0x03,        // action-driven request (same wire frame as poll)
+    CMD_STATUS_POLL = 0x1003       // device command used for both periodic and TC-driven polls
   };
 
   // Unified internal reply ID (matches scanForReply classification)
@@ -30,7 +27,8 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   static constexpr uint32_t DATASET_ID = 0xCA;
 
   struct RwReplySet : public LocalDataSet {
-    LocalPoolVector<uint8_t, 8> raw;
+    // Wire reply is 9 bytes with CRC-16: [AB,10,spdH,spdL,torH,torL,running,crcH,crcL]
+    LocalPoolVector<uint8_t, RwProtocol::STATUS_LEN> raw;
     explicit RwReplySet(HasLocalDataPoolIF* owner)
         : LocalDataSet(owner, DATASET_ID, 1),
           raw(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::RAW_REPLY), this) {}
@@ -67,11 +65,8 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   // Drain UART RX quickly in a non-blocking fashion to drop stale bytes
   ReturnValue_t drainRxNow();
 
-  // CRC8 helper (same polynomial as device)
-  static uint8_t crc8(const uint8_t* data, size_t len);
-
-  // Compact TX buffer for all commands (STATUS/SET/STOP are 5 bytes)
-  uint8_t txBuf[5] = {};
+  // Compact TX buffer for all commands (STATUS/SET/STOP are 6 bytes with CRC-16)
+  uint8_t txBuf[RwProtocol::CMD_LEN] = {};
 
   // Simple warm-up before entering NORMAL
   uint32_t warmupCnt{0};
@@ -90,9 +85,18 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   // Queue to route a TC data reply back to the requester (PUS service)
   MessageQueueId_t pendingTcStatusReportedTo{MessageQueueIF::NO_QUEUE};
 
-  // Most recent raw reply (8-byte wire frame)
+  // Most recent raw reply (9-byte wire frame with CRC-16)
   RwReplySet replySet{this};
 
   // Last commanded target RPM (for reference/diagnostics)
   int16_t lastTargetRpm{0};
 };
+
+// Debug/trace compile-time switches
+#ifndef RW_VERBOSE
+#define RW_VERBOSE 0
+#endif
+
+#ifndef POLL_SNOOZE_CYCLES
+#define POLL_SNOOZE_CYCLES 3
+#endif
