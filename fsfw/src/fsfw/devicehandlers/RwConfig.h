@@ -17,7 +17,7 @@ constexpr uint8_t  STATUS_TIMEOUT_CYCLES       = 6;   // cycles until timeout af
 constexpr std::size_t RX_RING_SIZE   = 256;
 constexpr uint32_t    RX_RING_OBJ_ID = 0xDEADB011; // arbitrary, only needs to be unique
 
-// ----- Limits (default values) ----------------------------------------------
+// ----- Reaction Wheel Limits ----------------------------------------------
 constexpr int16_t  MAX_RPM_DEFAULT        = 4000; // clamp SET_SPEED
 constexpr uint16_t MAX_SLEW_RPM_S_DEFAULT = 0;    // 0 = disabled
 

@@ -16,7 +16,6 @@
 #include "fsfw/storagemanager/StorageManagerIF.h"
 #include "fsfw/storagemanager/storeAddress.h"
 
-
 namespace {
 
 inline uint32_t be32(const uint8_t* p) {
@@ -135,11 +134,15 @@ ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t, const uint8_t* tcD
   }
 
   *id = dh->getCommandQueue();
+
+  // Map sender queue -> object id for robust unrequested reply routing
+  qidToObj_[*id] = *objectId;
+
 #if RW_PUS_VERBOSE
   sif::warning << "PUS220 route: commandQueueId=0x" << std::hex << *id << std::dec << std::endl;
 #endif
 
-  lastTargetObjectId_ = *objectId;
+  lastTargetObjectId_ = *objectId;  // fallback
   return returnvalue::OK;
 }
 
@@ -192,6 +195,7 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
     }
 
     case Subservice::STATUS: {
+      // We expect a DATA_REPLY later -> go into WAIT_DATA state
       if (state) *state = static_cast<uint32_t>(CmdState::WAIT_DATA);
 
       store_address_t sid{};
@@ -233,7 +237,6 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
 #if RW_PUS_VERBOSE
     sif::warning << "[PUS220 generic] invalid store address (sid invalid)" << std::endl;
 #endif
-    return returnvalue::FAILED;
   }
 
   StorageManagerIF* stores[3] = {ipcStore, tmStore, tcStore};
@@ -370,6 +373,7 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
 
     const auto rv = handleDataReplyAndEmitTm(sid, objectId);
     if (rv == returnvalue::OK) {
+      // *** IMPORTANT: finish the transaction to avoid lingering WAIT_DATA ***
       if (state) *state = static_cast<uint32_t>(CmdState::NONE);
       return CommandingServiceBase::EXECUTION_COMPLETE;
     }
@@ -380,25 +384,29 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
     return returnvalue::OK;
   }
 
-  // 2) Control-only replies: keep the command open while waiting for data
+  // 2) Control-only replies
   switch (cmd) {
-    case ActionMessage::STEP_SUCCESS:
+    case ActionMessage::STEP_SUCCESS: {
+      // Treat one-step commands (SET/STOP) as done when not in WAIT_DATA
+      if (st != CmdState::WAIT_DATA) {
+        return CommandingServiceBase::EXECUTION_COMPLETE;
+      }
       if (isStep) *isStep = true;
-      if (st == CmdState::WAIT_DATA) return returnvalue::OK;
       return returnvalue::OK;
-
-    case ActionMessage::COMPLETION_SUCCESS:
+    }
+    case ActionMessage::COMPLETION_SUCCESS: {
+      // One-shot commands completed
       if (st == CmdState::WAIT_DATA) return returnvalue::OK;
       return CommandingServiceBase::EXECUTION_COMPLETE;
-
-    case ActionMessage::STEP_FAILED:
+    }
+    case ActionMessage::STEP_FAILED: {
       if (isStep) *isStep = true;
       return ActionMessage::getReturnCode(reply);
-
-    case ActionMessage::COMPLETION_FAILED:
+    }
+    case ActionMessage::COMPLETION_FAILED: {
       return ActionMessage::getReturnCode(reply);
-
-    default:
+    }
+    default: {
 #if RW_PUS_VERBOSE
       sif::warning << "[PUS220] unhandled control reply; cmd=0x" << std::hex << int(cmd) << std::dec
                    << std::endl;
@@ -408,6 +416,7 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
         return returnvalue::OK;
       }
       return returnvalue::OK;
+    }
   }
 }
 
@@ -425,12 +434,22 @@ void RwPusService::handleUnrequestedReply(CommandMessage* reply) {
       sidDh.raw != StorageManagerIF::INVALID_ADDRESS) {
     const store_address_t sid =
         (sidAction.raw != StorageManagerIF::INVALID_ADDRESS) ? sidAction : sidDh;
+
+    // Map sender queue -> object id (robust when multiple RWs exist)
+    object_id_t obj = lastTargetObjectId_;
+    // MessageQueueMessage exposes the sender; CommandMessage derives from it
+    const MessageQueueId_t sender = reply->getSender();
+    auto it = qidToObj_.find(sender);
+    if (it != qidToObj_.end()) {
+      obj = it->second;
+    }
+
 #if RW_PUS_VERBOSE
     sif::warning << "[PUS220] UNREQUESTED: treating message as DATA (sid=0x" << std::hex << sid.raw
-                 << std::dec << "), object=0x" << std::hex << lastTargetObjectId_ << std::dec
-                 << std::endl;
+                 << std::dec << "), object=0x" << std::hex << obj << std::dec
+                 << " senderQ=0x" << std::hex << sender << std::dec << std::endl;
 #endif
-    (void)handleDataReplyAndEmitTm(sid, lastTargetObjectId_);
+    (void)handleDataReplyAndEmitTm(sid, obj);
   } else {
 #if RW_PUS_VERBOSE
     sif::warning << "[PUS220] UNREQUESTED: no store id in message -> ignore" << std::endl;

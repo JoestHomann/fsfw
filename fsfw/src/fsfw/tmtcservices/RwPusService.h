@@ -5,6 +5,8 @@
 #include "fsfw/storagemanager/storeAddress.h"
 #include "fsfw/tmtcservices/CommandingServiceBase.h"
 
+#include <unordered_map>
+
 /**
  * Minimal PUS service for a reaction wheel commander.
  *
@@ -48,7 +50,7 @@ class RwPusService : public CommandingServiceBase {
   ReturnValue_t handleReply(const CommandMessage* reply, Command_t previousCommand, uint32_t* state,
                             CommandMessage* next, object_id_t objectId, bool* isStep) override;
 
-  // Parses RW status payload from store and emits TM_STATUS.
+  // Parse RW status payload from store and emit TM_STATUS.
   ReturnValue_t handleDataReplyAndEmitTm(store_address_t sid, object_id_t objectId);
 
   // Handle late/unrequested data replies by trying to parse & emit TM.
@@ -60,7 +62,10 @@ class RwPusService : public CommandingServiceBase {
   StorageManagerIF* tmStore = nullptr;
   StorageManagerIF* tcStore = nullptr;
 
-  // Last addressed RW object (used to route unrequested replies)
+  // Route unrequested replies robustly: sender queue -> object id
+  std::unordered_map<MessageQueueId_t, object_id_t> qidToObj_{};
+
+  // Fallback if sender mapping is not known yet
   object_id_t lastTargetObjectId_{objects::NO_OBJECT};
 };
 
