@@ -64,6 +64,8 @@ ReturnValue_t pst::pollingSequenceDevices(FixedTimeslotTaskIF *thisSequence) {
   // ReactionWheelsHandler: GET_READ
   thisSequence->addSlot(objects::RW_HANDLER, 0.80 * length, DeviceHandlerIF::GET_READ);
 
+// Note: Other ReactionWheelsHandler can be added in the list above
+
 #if FSFW_CPP_OSTREAM_ENABLED == 1
   sif::info << "PST devices: scheduled RW_HANDLER with 5 slots; period(ms)=" << length // Debug JH
             << std::endl;
