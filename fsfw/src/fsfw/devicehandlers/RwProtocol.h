@@ -17,7 +17,7 @@ inline constexpr size_t STATUS_LEN = 9;  // [AB, 0x10, spdH, spdL, torH, torL, r
 
 // --- Build command frames (Host -> Device) ---
 // Big-endian fields; CRC-16/CCITT-FALSE appended big-endian.
-// Return: total bytes (payload + 2 CRC) or 0 on error (e.g., buffer too small).
+// Return: total bytes (payload + 2 CRC) or 0 on error.
 size_t buildSetSpeed(uint8_t* out, size_t cap, int16_t rpm);
 size_t buildStop(uint8_t* out, size_t cap);
 size_t buildStatusReq(uint8_t* out, size_t cap);

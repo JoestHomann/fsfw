@@ -63,3 +63,8 @@ class RwPusService : public CommandingServiceBase {
   // Last addressed RW object (used to route unrequested replies)
   object_id_t lastTargetObjectId_{objects::NO_OBJECT};
 };
+
+// Debug On/Off switch (set to 1 to enable debug output)
+#ifndef RW_PUS_VERBOSE
+#define RW_PUS_VERBOSE 0
+#endif

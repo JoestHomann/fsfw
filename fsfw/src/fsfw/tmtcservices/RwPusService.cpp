@@ -16,10 +16,6 @@
 #include "fsfw/storagemanager/StorageManagerIF.h"
 #include "fsfw/storagemanager/storeAddress.h"
 
-// Debug On/Off switch (set to 1 to enable debug output)
-#ifndef RW_PUS_VERBOSE
-#define RW_PUS_VERBOSE 0
-#endif
 
 namespace {
 

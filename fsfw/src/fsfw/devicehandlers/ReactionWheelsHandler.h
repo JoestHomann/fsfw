@@ -1,6 +1,6 @@
 #pragma once
 
-#include "fsfw/devicehandlers/RwProtocol.h"
+#include "RwProtocol.h"
 
 #include "fsfw/datapoollocal/LocalDataPoolManager.h"
 #include "fsfw/datapoollocal/LocalDataSet.h"
@@ -8,6 +8,7 @@
 #include "fsfw/devicehandlers/DeviceHandlerBase.h"
 #include "fsfw/ipc/MessageQueueIF.h"
 #include "fsfw/returnvalues/returnvalue.h"
+#include "fsfw/container/SharedRingBuffer.h"   // thread-safe RX ring buffer
 
 class ReactionWheelsHandler : public DeviceHandlerBase {
  public:
@@ -62,14 +63,16 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
                               const uint8_t* data, size_t size) override;
 
  private:
-  // Drain UART RX quickly in a non-blocking fashion to drop stale bytes
+  // Quickly drain UART RX (drop stale bytes)
   ReturnValue_t drainRxNow();
+  // Drain into ring buffer (non-blocking, thread-safe)
+  ReturnValue_t drainRxIntoRing();
 
   // Compact TX buffer for all commands (STATUS/SET/STOP are 6 bytes with CRC-16)
   uint8_t txBuf[RwProtocol::CMD_LEN] = {};
 
   // Simple warm-up before entering NORMAL
-  uint32_t warmupCnt{0};
+  uint32_t warmupCnt{0}; // DELETE???
   static constexpr uint32_t warmupCycles{2};
 
   // Periodic polling divider (incremented each PST cycle)
@@ -77,7 +80,7 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   static constexpr uint32_t statusPollDivider{100};
 
   // Short backoff ticks after TC to avoid immediate re-poll
-  uint32_t pollSnooze{0};
+  uint32_t pollSnooze{0}; // DELETE???
 
   // Set true when a TC STATUS has been issued; next valid frame will be routed as DATA_REPLY
   bool pendingTcStatusTm{false};
@@ -89,14 +92,23 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   RwReplySet replySet{this};
 
   // Last commanded target RPM (for reference/diagnostics)
-  int16_t lastTargetRpm{0};
+  int16_t lastTargetRpm{0}; // DELETE???
+
+  // --- RX ring buffer (thread-safe) ----------------------------------------
+  // Using external storage to avoid dynamic allocation.
+  static constexpr size_t RX_RING_SIZE = 256;
+  uint8_t rxStorage[RX_RING_SIZE] = {};
+  // Object ID here is arbitrary; if you manage object IDs strictly, move this to commonObjects.h.
+  SharedRingBuffer rxRing{/*objectId*/ 0xDEADB011, rxStorage, RX_RING_SIZE,
+                          /*overwriteOld*/ false,
+                          /*maxExcessBytes*/ RwProtocol::STATUS_LEN - 1};
 };
 
 // Debug/trace compile-time switches
 #ifndef RW_VERBOSE
-#define RW_VERBOSE 0
+#define RW_VERBOSE 1
 #endif
 
 #ifndef POLL_SNOOZE_CYCLES
-#define POLL_SNOOZE_CYCLES 3
+#define POLL_SNOOZE_CYCLES 3 // Delete???
 #endif
