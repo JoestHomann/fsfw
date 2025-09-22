@@ -17,6 +17,7 @@
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
 #include "fsfw/storagemanager/StorageManagerIF.h"
 #include "fsfw/storagemanager/storeAddress.h"
+#include "fsfw/timemanager/Clock.h"  // for timestamp in cache
 
 namespace {
 
@@ -117,6 +118,27 @@ ReturnValue_t RwPusService::isValidSubservice(uint8_t subservice) {
   }
 }
 
+void RwPusService::rememberMapping(object_id_t obj, MessageQueueId_t q) {
+  if (obj == objects::NO_OBJECT || q == MessageQueueIF::NO_QUEUE) return;
+  objToQid_[obj] = q;
+  qidToObj_[q]   = obj;
+}
+
+MessageQueueId_t RwPusService::getQidFor(object_id_t obj) const {
+  auto it = objToQid_.find(obj);
+  if (it != objToQid_.end()) {
+    return it->second;
+  }
+  // Optional lazy resolution via ObjectManager
+  auto* dh = ObjectManager::instance()->get<DeviceHandlerIF>(obj);
+  if (dh != nullptr) {
+    const MessageQueueId_t q = dh->getCommandQueue();
+    const_cast<RwPusService*>(this)->rememberMapping(obj, q);
+    return q;
+  }
+  return MessageQueueIF::NO_QUEUE;
+}
+
 ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t, const uint8_t* tcData, size_t tcLen,
                                                      MessageQueueId_t* id, object_id_t* objectId) {
   if (tcLen < 4) return CommandingServiceBase::INVALID_TC;
@@ -137,10 +159,8 @@ ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t, const uint8_t* tcD
 
   *id = dh->getCommandQueue();
 
-  // Learn/update mapping: sender queue -> object id (robust when multiple RWs exist)
-  if (*id != MessageQueueIF::NO_QUEUE) {
-    qidToObj_[*id] = *objectId;
-  }
+  // Learn/update both directions for multi-device operation
+  rememberMapping(*objectId, *id);
 
 #if RW_PUS_VERBOSE
   sif::warning << "PUS220 route: commandQueueId=0x" << std::hex << *id << std::dec << std::endl;
@@ -287,6 +307,12 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
     if (!ok) {
       rv = returnvalue::FAILED;
     } else {
+      // Update per-object status cache with local uptime timestamp
+      uint32_t ms = 0;
+      (void)Clock::getUptime(&ms);
+      lastStatus_[objectId] = RwStatusCache{
+          .speedRpm = st.speedRpm, .torqueMnM = st.torqueMnM, .running = st.running, .timestampMs = ms};
+
       // AppData: [object_id(4) | speed(2) | torque(2) | running(1)] => 9 bytes
       uint8_t app[9];
       app[0] = static_cast<uint8_t>((objectId >> 24) & 0xFF);

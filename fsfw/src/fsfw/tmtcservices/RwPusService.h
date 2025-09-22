@@ -66,7 +66,21 @@ class RwPusService : public CommandingServiceBase {
   // Robust routing for unrequested replies: sender queue -> object id
   std::unordered_map<MessageQueueId_t, object_id_t> qidToObj_{};
 
-  // Helper: resolve RW object from sender queue
+  // Multi-device support: object id -> sender queue
+  std::unordered_map<object_id_t, MessageQueueId_t> objToQid_{};
+
+  // Optional per-object status cache for quick access/re-broadcasts
+  struct RwStatusCache {
+    int16_t  speedRpm{0};
+    int16_t  torqueMnM{0};
+    uint8_t  running{0};
+    uint32_t timestampMs{0};  // local uptime when parsed
+  };
+  std::unordered_map<object_id_t, RwStatusCache> lastStatus_{};
+
+  // Helpers
+  void rememberMapping(object_id_t obj, MessageQueueId_t q);
+  MessageQueueId_t getQidFor(object_id_t obj) const;
   object_id_t resolveObjFromSender(MessageQueueId_t sender) const;
 };
 
