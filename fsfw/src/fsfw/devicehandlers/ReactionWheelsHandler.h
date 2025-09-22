@@ -36,17 +36,18 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
     POLL_DIVIDER   = 3   // uint32
   };
 
-  // Local pool IDs
-  enum class PoolIds : lp_id_t {
-    RAW_REPLY = 1,
-    HK_SPEED_RPM = 2,
-    HK_TORQUE_mNm = 3,
-    HK_RUNNING = 4,
-    HK_FLAGS = 5,
-    HK_ERROR = 6,
-    HK_CRC_ERR_CNT = 7,
-    HK_MALFORMED_CNT = 8
-  };
+ // Local pool IDs
+enum class PoolIds : lp_id_t {
+  RAW_REPLY = 1,
+  HK_SPEED_RPM = 2,
+  HK_TORQUE_mNm = 3,
+  HK_RUNNING = 4,
+  HK_FLAGS = 5,
+  HK_ERROR = 6,
+  HK_CRC_ERR_CNT = 7,
+  HK_MALFORMED_CNT = 8,
+  HK_TIMESTAMP_MS = 9            
+};
 
   // Dataset IDs
   static constexpr uint32_t DATASET_ID_RAW = 0xCA;
@@ -61,25 +62,29 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   };
 
   // HK dataset
-  struct RwHkSet : public LocalDataSet {
-    LocalPoolVariable<int16_t>  speedRpm;
-    LocalPoolVariable<int16_t>  torque_mNm;
-    LocalPoolVariable<uint8_t>  running;
-    LocalPoolVariable<uint16_t> flags;
-    LocalPoolVariable<uint16_t> error;
-    LocalPoolVariable<uint32_t> crcErrCnt;
-    LocalPoolVariable<uint32_t> malformedCnt;
-    static constexpr uint16_t HK_VAR_COUNT = 7;
-    explicit RwHkSet(HasLocalDataPoolIF* owner)
-        : LocalDataSet(owner, DATASET_ID_HK, HK_VAR_COUNT),
-          speedRpm(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM), this),
-          torque_mNm(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm), this),
-          running(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_RUNNING), this),
-          flags(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_FLAGS), this),
-          error(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_ERROR), this),
-          crcErrCnt(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT), this),
-          malformedCnt(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_MALFORMED_CNT), this) {}
-  };
+struct RwHkSet : public LocalDataSet {
+  LocalPoolVariable<int16_t>  speedRpm;
+  LocalPoolVariable<int16_t>  torque_mNm;
+  LocalPoolVariable<uint8_t>  running;
+  LocalPoolVariable<uint16_t> flags;
+  LocalPoolVariable<uint16_t> error;
+  LocalPoolVariable<uint32_t> crcErrCnt;
+  LocalPoolVariable<uint32_t> malformedCnt;
+  LocalPoolVariable<uint32_t> timestampMs;  
+
+  static constexpr uint16_t HK_VAR_COUNT = 8;
+
+  explicit RwHkSet(HasLocalDataPoolIF* owner)
+      : LocalDataSet(owner, DATASET_ID_HK, HK_VAR_COUNT),
+        speedRpm(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM), this),
+        torque_mNm(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm), this),
+        running(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_RUNNING), this),
+        flags(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_FLAGS), this),
+        error(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_ERROR), this),
+        crcErrCnt(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT), this),
+        malformedCnt(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_MALFORMED_CNT), this),
+        timestampMs(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS), this) {}
+};
 
   // Transition delays
   static constexpr uint32_t RW_DELAY_OFF_TO_ON_MS    = RwConfig::DELAY_OFF_TO_ON_MS;

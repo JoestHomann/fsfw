@@ -1,10 +1,11 @@
 #include "ReactionWheelsHandler.h"
 
+#include <cmath>
 #include <cstring>
 #include <iomanip>
 #include <vector>
-#include <cmath>
 
+#include "RwEvents.h"
 #include "RwProtocol.h"
 #include "fsfw/action/ActionHelper.h"
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"
@@ -13,7 +14,7 @@
 #include "fsfw/parameters/ParameterMessage.h"
 #include "fsfw/returnvalues/returnvalue.h"
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
-#include "RwEvents.h"
+#include "fsfw/timemanager/Clock.h"  // NEW: for uptime in ms
 
 #if RW_VERBOSE
 static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
@@ -24,7 +25,9 @@ static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
   }
   sif::warning << std::dec << std::endl;
 #else
-  (void)tag; (void)p; (void)n;
+  (void)tag;
+  (void)p;
+  (void)n;
 #endif
 }
 #else
@@ -138,9 +141,9 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
       *id = DeviceHandlerIF::NO_COMMAND_ID;
       return NOTHING_TO_SEND;
     }
-    rawPacket    = txBuf;
+    rawPacket = txBuf;
     rawPacketLen = total;
-    *id          = CMD_STATUS_POLL;
+    *id = CMD_STATUS_POLL;
     statusAwaitCnt = 0;
     dumpHexWarn("DH TX (TC-driven STATUS poll)", txBuf, total);
     return returnvalue::OK;
@@ -154,9 +157,9 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
       *id = DeviceHandlerIF::NO_COMMAND_ID;
       return NOTHING_TO_SEND;
     }
-    rawPacket    = txBuf;
+    rawPacket = txBuf;
     rawPacketLen = total;
-    *id          = CMD_STATUS_POLL;
+    *id = CMD_STATUS_POLL;
     statusAwaitCnt = 0;
     dumpHexWarn("DH TX (periodic STATUS poll)", txBuf, total);
     return returnvalue::OK;
@@ -180,14 +183,21 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       }
       int16_t rpm = 0;
       std::memcpy(&rpm, data, sizeof(rpm));
-      if (rpm >  RwConfig::MAX_RPM_DEFAULT) rpm =  RwConfig::MAX_RPM_DEFAULT;
-      if (rpm < -RwConfig::MAX_RPM_DEFAULT) rpm = -RwConfig::MAX_RPM_DEFAULT;
+
+      // Clamp against runtime parameter (allow +/- limit).
+      // Safety fallback if someone sets p_maxRpm <= 0 via parameters.
+      int16_t lim = p_maxRpm;
+      if (lim <= 0) {
+        lim = RwConfig::MAX_RPM_DEFAULT;
+      }
+      if (rpm > lim) rpm = lim;
+      if (rpm < -lim) rpm = -lim;
 
       const size_t total = RwProtocol::buildSetSpeed(txBuf, sizeof(txBuf), rpm);
       if (total == 0) {
         return returnvalue::FAILED;
       }
-      rawPacket    = txBuf;
+      rawPacket = txBuf;
       rawPacketLen = total;
       dumpHexWarn("DH TX (TC frame: SET_SPEED)", txBuf, total);
       return returnvalue::OK;
@@ -198,7 +208,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       if (total == 0) {
         return returnvalue::FAILED;
       }
-      rawPacket    = txBuf;
+      rawPacket = txBuf;
       rawPacketLen = total;
       dumpHexWarn("DH TX (TC frame: STOP)", txBuf, total);
       return returnvalue::OK;
@@ -209,7 +219,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       if (total == 0) {
         return returnvalue::FAILED;
       }
-      rawPacket    = txBuf;
+      rawPacket = txBuf;
       rawPacketLen = total;
       dumpHexWarn("DH TX (TC frame: STATUS)", txBuf, total);
       return returnvalue::OK;
@@ -228,9 +238,9 @@ void ReactionWheelsHandler::fillCommandAndReplyMap() {
   insertInCommandMap(CMD_SET_SPEED, false, 0);
   insertInCommandMap(CMD_STOP, false, 0);
 
-  insertInCommandAndReplyMap(
-      CMD_STATUS_POLL, 5, &replySet, RwProtocol::STATUS_LEN,
-      /*periodic*/ false, /*hasDifferentReplyId*/ true, REPLY_STATUS_POLL, /*countdown*/ nullptr);
+  insertInCommandAndReplyMap(CMD_STATUS_POLL, 5, &replySet, RwProtocol::STATUS_LEN,
+                             /*periodic*/ false, /*hasDifferentReplyId*/ true, REPLY_STATUS_POLL,
+                             /*countdown*/ nullptr);
 
   insertInCommandMap(CMD_STATUS, false, 0);
 }
@@ -269,7 +279,9 @@ void ReactionWheelsHandler::reportProtocolIssuesInWindow(const uint8_t* buf, siz
 }
 
 static inline bool findLatestValidStatus(const uint8_t* buf, size_t n, long& posOut) {
-  if (buf == nullptr || n < RwProtocol::STATUS_LEN) { return false; }
+  if (buf == nullptr || n < RwProtocol::STATUS_LEN) {
+    return false;
+  }
   for (long i = static_cast<long>(n) - static_cast<long>(RwProtocol::STATUS_LEN); i >= 0; --i) {
     const uint8_t* p = &buf[static_cast<size_t>(i)];
     if (p[0] == RwProtocol::START_REPLY &&
@@ -295,7 +307,7 @@ ReturnValue_t ReactionWheelsHandler::scanForReply(const uint8_t* start, size_t l
     std::memcpy(replySet.raw.value, src, RwProtocol::STATUS_LEN);
     replySet.raw.setValid(true);
     replySet.setValidity(true, true);
-    *foundId  = REPLY_STATUS_POLL;
+    *foundId = REPLY_STATUS_POLL;
     *foundLen = RwProtocol::STATUS_LEN;
     return returnvalue::OK;
   }
@@ -331,15 +343,15 @@ ReturnValue_t ReactionWheelsHandler::scanForReply(const uint8_t* start, size_t l
   replySet.setValidity(true, true);
 
 #if RW_VERBOSE
-  sif::warning << "scanForReply: matched STATUS in ring at off=" << pos
-               << ", deleting " << (pos + static_cast<long>(RwProtocol::STATUS_LEN))
-               << " bytes from ring" << std::endl;
+  sif::warning << "scanForReply: matched STATUS in ring at off=" << pos << ", deleting "
+               << (pos + static_cast<long>(RwProtocol::STATUS_LEN)) << " bytes from ring"
+               << std::endl;
 #endif
   (void)rxRing.deleteData(static_cast<size_t>(pos) + RwProtocol::STATUS_LEN,
                           /*deleteRemaining=*/false);
   (void)rxRing.unlockRingBufferMutex();
 
-  *foundId  = REPLY_STATUS_POLL;
+  *foundId = REPLY_STATUS_POLL;
   *foundLen = RwProtocol::STATUS_LEN;
   return returnvalue::OK;
 }
@@ -354,21 +366,27 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   const uint8_t* pkt = replySet.raw.isValid() ? replySet.raw.value : packet;
   dumpHexWarn("interpretDeviceReply: frame", pkt, RwProtocol::STATUS_LEN);
 
-  const int16_t speed   = static_cast<int16_t>((pkt[2] << 8) | pkt[3]);
-  const int16_t torque  = static_cast<int16_t>((pkt[4] << 8) | pkt[5]);
+  const int16_t speed = static_cast<int16_t>((pkt[2] << 8) | pkt[3]);
+  const int16_t torque = static_cast<int16_t>((pkt[4] << 8) | pkt[5]);
   const uint8_t running = pkt[6];
 
   sif::info << "RW STATUS: speed=" << speed << " RPM, torque=" << torque
             << " mNm, running=" << int(running) << std::endl;
 
   hkSet.setValidity(false, true);
-  hkSet.speedRpm.value     = speed;
-  hkSet.torque_mNm.value   = torque;
-  hkSet.running.value      = running;
-  hkSet.flags.value        = 0;
-  hkSet.error.value        = 0;
-  hkSet.crcErrCnt.value    = crcErrCnt;
+  hkSet.speedRpm.value = speed;
+  hkSet.torque_mNm.value = torque;
+  hkSet.running.value = running;
+  hkSet.flags.value = 0;
+  hkSet.error.value = 0;
+  hkSet.crcErrCnt.value = crcErrCnt;
   hkSet.malformedCnt.value = malformedCnt;
+
+  // Fill timestamp with monotonic uptime in milliseconds
+  uint32_t ms = 0;
+  Clock::getUptime(&ms);  // Returns uptime since boot in ms (wraps approx. 49 days, should be sufficient)
+  hkSet.timestampMs.value = ms;
+  
 
   hkSet.speedRpm.setValid(true);
   hkSet.torque_mNm.setValid(true);
@@ -377,14 +395,15 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   hkSet.error.setValid(true);
   hkSet.crcErrCnt.setValid(true);
   hkSet.malformedCnt.setValid(true);
+  hkSet.timestampMs.setValid(true);
   hkSet.setValidity(true, true);
+  
 
-  const bool stuckCond =
-      (hkSet.running.value == 0) && (std::abs(static_cast<int>(hkSet.speedRpm.value)) > STUCK_RPM_THRESH);
+  const bool stuckCond = (hkSet.running.value == 0) &&
+                         (std::abs(static_cast<int>(hkSet.speedRpm.value)) > STUCK_RPM_THRESH);
   if (stuckCond) {
     if (++stuckCnt >= STUCK_DEBOUNCE_FRAMES) {
-      triggerEvent(RwEvents::STUCK,
-                   static_cast<uint32_t>(hkSet.speedRpm.value),
+      triggerEvent(RwEvents::STUCK, static_cast<uint32_t>(hkSet.speedRpm.value),
                    static_cast<uint32_t>(hkSet.running.value));
       stuckCnt = 0;
       hkSet.flags.value |= 0x0001;
@@ -398,9 +417,7 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
       (std::abs(static_cast<int>(hkSet.torque_mNm.value)) > TORQUE_HIGH_MNM_THRESH);
   if (torqueHigh) {
     if (++torqueHighCnt >= TORQUE_DEBOUNCE_FRAMES) {
-      triggerEvent(RwEvents::TORQUE_HIGH,
-                   static_cast<uint32_t>(hkSet.torque_mNm.value),
-                   0);
+      triggerEvent(RwEvents::TORQUE_HIGH, static_cast<uint32_t>(hkSet.torque_mNm.value), 0);
       torqueHighCnt = 0;
       hkSet.flags.value |= 0x0002;
       hkSet.flags.setValid(true);
@@ -432,28 +449,25 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
 }
 
 uint32_t ReactionWheelsHandler::getTransitionDelayMs(Mode_t from, Mode_t to) {
-  if (from == MODE_OFF && to == MODE_ON)     return RwConfig::DELAY_OFF_TO_ON_MS;
-  if (from == MODE_ON  && to == MODE_NORMAL) return RwConfig::DELAY_ON_TO_NORMAL_MS;
+  if (from == MODE_OFF && to == MODE_ON) return RwConfig::DELAY_OFF_TO_ON_MS;
+  if (from == MODE_ON && to == MODE_NORMAL) return RwConfig::DELAY_ON_TO_NORMAL_MS;
   return 0;
 }
 
-ReturnValue_t ReactionWheelsHandler::initializeLocalDataPool(
-    localpool::DataPool& localDataPoolMap, LocalDataPoolManager&) {
+ReturnValue_t ReactionWheelsHandler::initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
+                                                             LocalDataPoolManager&) {
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::RAW_REPLY),
                            new PoolEntry<uint8_t>(RwProtocol::STATUS_LEN));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM),
-                           new PoolEntry<int16_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm),
-                           new PoolEntry<int16_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_RUNNING),
-                           new PoolEntry<uint8_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_FLAGS),
-                           new PoolEntry<uint16_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_ERROR),
-                           new PoolEntry<uint16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM), new PoolEntry<int16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm), new PoolEntry<int16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_RUNNING), new PoolEntry<uint8_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_FLAGS), new PoolEntry<uint16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_ERROR), new PoolEntry<uint16_t>(1));
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT),
                            new PoolEntry<uint32_t>(1));
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_MALFORMED_CNT),
+                           new PoolEntry<uint32_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS),
                            new PoolEntry<uint32_t>(1));
   return returnvalue::OK;
 }
