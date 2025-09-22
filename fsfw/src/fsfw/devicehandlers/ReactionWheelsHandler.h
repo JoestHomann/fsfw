@@ -7,6 +7,8 @@
 #include "fsfw/datapoollocal/LocalDataSet.h"
 #include "fsfw/datapoollocal/LocalPoolVector.h"
 #include "fsfw/datapoollocal/LocalPoolVariable.h"
+#include "fsfw/datapoollocal/LocalPoolDataSetBase.h" // for getDataSetHandle signature
+#include "fsfw/datapoollocal/localPoolDefinitions.h" // for sid_t, pool_rwm_t
 #include "fsfw/devicehandlers/DeviceHandlerBase.h"
 #include "fsfw/ipc/MessageQueueIF.h"
 #include "fsfw/returnvalues/returnvalue.h"
@@ -36,18 +38,18 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
     POLL_DIVIDER   = 3   // uint32
   };
 
- // Local pool IDs
-enum class PoolIds : lp_id_t {
-  RAW_REPLY = 1,
-  HK_SPEED_RPM = 2,
-  HK_TORQUE_mNm = 3,
-  HK_RUNNING = 4,
-  HK_FLAGS = 5,
-  HK_ERROR = 6,
-  HK_CRC_ERR_CNT = 7,
-  HK_MALFORMED_CNT = 8,
-  HK_TIMESTAMP_MS = 9            
-};
+  // Local pool IDs
+  enum class PoolIds : lp_id_t {
+    RAW_REPLY = 1,
+    HK_SPEED_RPM = 2,
+    HK_TORQUE_mNm = 3,
+    HK_RUNNING = 4,
+    HK_FLAGS = 5,
+    HK_ERROR = 6,
+    HK_CRC_ERR_CNT = 7,
+    HK_MALFORMED_CNT = 8,
+    HK_TIMESTAMP_MS = 9
+  };
 
   // Dataset IDs
   static constexpr uint32_t DATASET_ID_RAW = 0xCA;
@@ -61,30 +63,31 @@ enum class PoolIds : lp_id_t {
           raw(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::RAW_REPLY), this) {}
   };
 
-  // HK dataset
-struct RwHkSet : public LocalDataSet {
-  LocalPoolVariable<int16_t>  speedRpm;
-  LocalPoolVariable<int16_t>  torque_mNm;
-  LocalPoolVariable<uint8_t>  running;
-  LocalPoolVariable<uint16_t> flags;
-  LocalPoolVariable<uint16_t> error;
-  LocalPoolVariable<uint32_t> crcErrCnt;
-  LocalPoolVariable<uint32_t> malformedCnt;
-  LocalPoolVariable<uint32_t> timestampMs;  
+  // HK dataset (producer side: variables are VAR_WRITE to allow commit() without read()).
+  struct RwHkSet : public LocalDataSet {
+    LocalPoolVariable<int16_t>  speedRpm;
+    LocalPoolVariable<int16_t>  torque_mNm;
+    LocalPoolVariable<uint8_t>  running;
+    LocalPoolVariable<uint16_t> flags;
+    LocalPoolVariable<uint16_t> error;
+    LocalPoolVariable<uint32_t> crcErrCnt;
+    LocalPoolVariable<uint32_t> malformedCnt;
+    LocalPoolVariable<uint32_t> timestampMs;
 
-  static constexpr uint16_t HK_VAR_COUNT = 8;
+    static constexpr uint16_t HK_VAR_COUNT = 8;
 
-  explicit RwHkSet(HasLocalDataPoolIF* owner)
-      : LocalDataSet(owner, DATASET_ID_HK, HK_VAR_COUNT),
-        speedRpm(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM), this),
-        torque_mNm(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm), this),
-        running(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_RUNNING), this),
-        flags(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_FLAGS), this),
-        error(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_ERROR), this),
-        crcErrCnt(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT), this),
-        malformedCnt(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_MALFORMED_CNT), this),
-        timestampMs(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS), this) {}
-};
+    explicit RwHkSet(HasLocalDataPoolIF* owner)
+        : LocalDataSet(owner, DATASET_ID_HK, HK_VAR_COUNT),
+          // Mark all variables as write-only so we can commit without a prior read.
+          speedRpm     (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM),     this, pool_rwm_t::VAR_WRITE),
+          torque_mNm   (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm),    this, pool_rwm_t::VAR_WRITE),
+          running      (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_RUNNING),       this, pool_rwm_t::VAR_WRITE),
+          flags        (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_FLAGS),         this, pool_rwm_t::VAR_WRITE),
+          error        (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_ERROR),         this, pool_rwm_t::VAR_WRITE),
+          crcErrCnt    (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT),   this, pool_rwm_t::VAR_WRITE),
+          malformedCnt (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_MALFORMED_CNT), this, pool_rwm_t::VAR_WRITE),
+          timestampMs  (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS),  this, pool_rwm_t::VAR_WRITE) {}
+  };
 
   // Transition delays
   static constexpr uint32_t RW_DELAY_OFF_TO_ON_MS    = RwConfig::DELAY_OFF_TO_ON_MS;
@@ -96,6 +99,9 @@ struct RwHkSet : public LocalDataSet {
   void doStartUp() override;
   void doShutDown() override;
   void modeChanged() override;
+
+  // Enable periodic HK push via PUS Service 3
+  ReturnValue_t initializeAfterTaskCreation() override;
 
   ReturnValue_t buildNormalDeviceCommand(DeviceCommandId_t* id) override;
   ReturnValue_t buildTransitionDeviceCommand(DeviceCommandId_t* id) override;
@@ -117,6 +123,9 @@ struct RwHkSet : public LocalDataSet {
                              ParameterWrapper* parameterWrapper,
                              const ParameterWrapper* newValues,
                              uint16_t startAtIndex) override;
+
+  // Map SID -> dataset for HK manager (required for periodic HK push)
+  LocalPoolDataSetBase* getDataSetHandle(sid_t sid) override;
 
  private:
   // RX helpers
@@ -149,7 +158,7 @@ struct RwHkSet : public LocalDataSet {
   int16_t  p_maxRpm{RwConfig::MAX_RPM_DEFAULT};
   uint16_t p_maxSlewRpmS{RwConfig::MAX_SLEW_RPM_S_DEFAULT};
 
-  // FDIR thresholds / debounce (aus Config)
+  // FDIR thresholds / debounce (from config)
   static constexpr int16_t STUCK_RPM_THRESH       = RwConfig::STUCK_RPM_THRESH;
   static constexpr uint8_t STUCK_DEBOUNCE_FRAMES  = RwConfig::STUCK_DEBOUNCE_FRAMES;
   static constexpr int16_t TORQUE_HIGH_MNM_THRESH = RwConfig::TORQUE_HIGH_MNM_THRESH;

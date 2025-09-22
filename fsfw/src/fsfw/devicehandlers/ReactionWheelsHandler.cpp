@@ -14,7 +14,10 @@
 #include "fsfw/parameters/ParameterMessage.h"
 #include "fsfw/returnvalues/returnvalue.h"
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
-#include "fsfw/timemanager/Clock.h"  // NEW: for uptime in ms
+#include "fsfw/timemanager/Clock.h"  // for uptime in ms
+
+// Types for periodic HK subscription (subdp::RegularHkPeriodicParams)
+#include "fsfw/datapoollocal/ProvidesDataPoolSubscriptionIF.h"
 
 #if RW_VERBOSE
 static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
@@ -57,6 +60,31 @@ void ReactionWheelsHandler::modeChanged() {
   this->getMode(&m, &s);
   sif::info << "ReactionWheelsHandler: modeChanged -> " << static_cast<int>(m)
             << " (sub=" << static_cast<int>(s) << ")" << std::endl;
+}
+
+// Subscribe HK dataset for periodic PUS Service 3 downlink (TM[25])
+ReturnValue_t ReactionWheelsHandler::initializeAfterTaskCreation() {
+  // Keep base class initialization (queues, pool manager, task info, ..)
+  ReturnValue_t rv = DeviceHandlerBase::initializeAfterTaskCreation();
+  if (rv != returnvalue::OK) {
+    return rv;
+  }
+
+  // Build SID for our HK dataset and subscribe it for periodic reporting.
+  const sid_t hkSid{getObjectId(), DATASET_ID_HK};
+
+  // 3-argument ctor: (sid, enableReporting, collectionInterval)
+  subdp::RegularHkPeriodicParams params(
+      hkSid,
+      /*enableReporting*/ true,
+      /*collectionInterval [s]*/ RwConfig::HK_PERIOD_S);
+
+  // Destination defaults to PUS Service 3 (see LocalDataPoolManager defaultHkDestination).
+  auto* hkMgr = getHkManagerHandle();
+  if (hkMgr == nullptr) {
+    return returnvalue::FAILED;
+  }
+  return hkMgr->subscribeForRegularPeriodicPacket(params);
 }
 
 ReturnValue_t ReactionWheelsHandler::drainRxNow() {
@@ -242,6 +270,11 @@ void ReactionWheelsHandler::fillCommandAndReplyMap() {
                              /*periodic*/ false, /*hasDifferentReplyId*/ true, REPLY_STATUS_POLL,
                              /*countdown*/ nullptr);
 
+  // Optional explicit mapping for TC-triggered STATUS, if desired:
+  // insertInCommandAndReplyMap(CMD_STATUS, 5, &replySet, RwProtocol::STATUS_LEN,
+  //                            /*periodic*/ false, /*hasDifferentReplyId*/ true, REPLY_STATUS_POLL,
+  //                            /*countdown*/ nullptr);
+
   insertInCommandMap(CMD_STATUS, false, 0);
 }
 
@@ -373,7 +406,10 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   sif::info << "RW STATUS: speed=" << speed << " RPM, torque=" << torque
             << " mNm, running=" << int(running) << std::endl;
 
+  // Mark dataset invalid while updating fields (atomic snapshot semantics)
   hkSet.setValidity(false, true);
+
+  // Update fields
   hkSet.speedRpm.value = speed;
   hkSet.torque_mNm.value = torque;
   hkSet.running.value = running;
@@ -384,10 +420,10 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
 
   // Fill timestamp with monotonic uptime in milliseconds
   uint32_t ms = 0;
-  Clock::getUptime(&ms);  // Returns uptime since boot in ms (wraps approx. 49 days, should be sufficient)
+  Clock::getUptime(&ms);  // Returns uptime since boot in ms (wraps ~49 days)
   hkSet.timestampMs.value = ms;
-  
 
+  // Validate all fields, then the dataset
   hkSet.speedRpm.setValid(true);
   hkSet.torque_mNm.setValid(true);
   hkSet.running.setValid(true);
@@ -397,8 +433,8 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   hkSet.malformedCnt.setValid(true);
   hkSet.timestampMs.setValid(true);
   hkSet.setValidity(true, true);
-  
 
+  // Simple FDIR flags (stuck & torque high)
   const bool stuckCond = (hkSet.running.value == 0) &&
                          (std::abs(static_cast<int>(hkSet.speedRpm.value)) > STUCK_RPM_THRESH);
   if (stuckCond) {
@@ -430,12 +466,14 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
     triggerEvent(RwEvents::ERROR_CODE, static_cast<uint32_t>(hkSet.error.value), 0);
   }
 
+  // Keep last raw frame for debugging/ground pull
   if (!replySet.raw.isValid()) {
     std::memcpy(replySet.raw.value, pkt, RwProtocol::STATUS_LEN);
     replySet.raw.setValid(true);
     replySet.setValidity(true, true);
   }
 
+  // If this was a TC-driven status pull, report reply to requester
   if (pendingTcStatusTm) {
     if (pendingTcStatusReportedTo != MessageQueueIF::NO_QUEUE) {
       (void)actionHelper.reportData(pendingTcStatusReportedTo, CMD_STATUS, pkt,
@@ -444,6 +482,9 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
     pendingTcStatusTm = false;
     pendingTcStatusReportedTo = MessageQueueIF::NO_QUEUE;
   }
+
+  // Finally publish snapshot into the local data pool so Svc3/consumers see all changes
+  hkSet.commit();
 
   return returnvalue::OK;
 }
@@ -481,6 +522,7 @@ ReturnValue_t ReactionWheelsHandler::executeAction(ActionId_t actionId,
 #endif
   const auto cmd = static_cast<DeviceCommandId_t>(actionId);
   if (cmd == CMD_STATUS) {
+    // Defer immediate STATUS poll to buildNormalDeviceCommand() in next cycle
     pendingTcStatusTm = true;
     pendingTcStatusReportedTo = commandedBy;
   }
@@ -532,3 +574,16 @@ ReturnValue_t ReactionWheelsHandler::getParameter(uint8_t domainId, uint8_t para
       return returnvalue::FAILED;
   }
 }
+
+// Map SID -> dataset so the HK manager can locate our sets.
+LocalPoolDataSetBase* ReactionWheelsHandler::getDataSetHandle(sid_t sid) {
+  if (sid.ownerSetId == DATASET_ID_HK) {
+    return &hkSet;
+  }
+  if (sid.ownerSetId == DATASET_ID_RAW) {
+    return &replySet;
+  }
+  // Fallback to base mapping (command/reply datasets via deviceReplyMap)
+  return DeviceHandlerBase::getDataSetHandle(sid);
+}
+
