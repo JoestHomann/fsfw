@@ -4,6 +4,7 @@
 #include "fsfw/storagemanager/StorageManagerIF.h"
 #include "fsfw/storagemanager/storeAddress.h"
 #include "fsfw/tmtcservices/CommandingServiceBase.h"
+#include "fsfw/ipc/MessageQueueIF.h"  // for MessageQueueId_t
 
 #include <unordered_map>
 
@@ -53,7 +54,7 @@ class RwPusService : public CommandingServiceBase {
   // Parse RW status payload from store and emit TM_STATUS.
   ReturnValue_t handleDataReplyAndEmitTm(store_address_t sid, object_id_t objectId);
 
-  // Handle late/unrequested data replies by trying to parse & emit TM.
+  // Handle late/unrequested data replies by resolving sender via qid->obj map.
   void handleUnrequestedReply(CommandMessage* reply) override;
 
  private:
@@ -62,11 +63,11 @@ class RwPusService : public CommandingServiceBase {
   StorageManagerIF* tmStore = nullptr;
   StorageManagerIF* tcStore = nullptr;
 
-  // Route unrequested replies robustly: sender queue -> object id
+  // Robust routing for unrequested replies: sender queue -> object id
   std::unordered_map<MessageQueueId_t, object_id_t> qidToObj_{};
 
-  // Fallback if sender mapping is not known yet
-  object_id_t lastTargetObjectId_{objects::NO_OBJECT};
+  // Helper: resolve RW object from sender queue
+  object_id_t resolveObjFromSender(MessageQueueId_t sender) const;
 };
 
 // Debug On/Off switch (set to 1 to enable debug output)

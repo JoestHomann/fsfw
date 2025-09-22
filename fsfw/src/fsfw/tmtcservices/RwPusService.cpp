@@ -3,7 +3,9 @@
 #include <cstring>
 #include <iomanip>
 
-#include "fsfw/devicehandlers/RwProtocol.h"  // Shared protocol helpers (CRC-16, IDs, STATUS_LEN)
+// Use canonical path so it builds from the tmtcservices target as well
+#include "fsfw/devicehandlers/RwProtocol.h"  // CRC-16, IDs, STATUS_LEN
+
 #include "commonObjects.h"
 #include "fsfw/action/ActionMessage.h"
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"
@@ -135,14 +137,15 @@ ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t, const uint8_t* tcD
 
   *id = dh->getCommandQueue();
 
-  // Map sender queue -> object id for robust unrequested reply routing
-  qidToObj_[*id] = *objectId;
+  // Learn/update mapping: sender queue -> object id (robust when multiple RWs exist)
+  if (*id != MessageQueueIF::NO_QUEUE) {
+    qidToObj_[*id] = *objectId;
+  }
 
 #if RW_PUS_VERBOSE
   sif::warning << "PUS220 route: commandQueueId=0x" << std::hex << *id << std::dec << std::endl;
 #endif
 
-  lastTargetObjectId_ = *objectId;  // fallback
   return returnvalue::OK;
 }
 
@@ -373,7 +376,7 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
 
     const auto rv = handleDataReplyAndEmitTm(sid, objectId);
     if (rv == returnvalue::OK) {
-      // *** IMPORTANT: finish the transaction to avoid lingering WAIT_DATA ***
+      // Finish the transaction to avoid lingering WAIT_DATA
       if (state) *state = static_cast<uint32_t>(CmdState::NONE);
       return CommandingServiceBase::EXECUTION_COMPLETE;
     }
@@ -420,6 +423,14 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
   }
 }
 
+object_id_t RwPusService::resolveObjFromSender(MessageQueueId_t sender) const {
+  auto it = qidToObj_.find(sender);
+  if (it != qidToObj_.end()) {
+    return it->second;
+  }
+  return objects::NO_OBJECT;
+}
+
 void RwPusService::handleUnrequestedReply(CommandMessage* reply) {
   const auto cmd = reply->getCommand();
 #if RW_PUS_VERBOSE
@@ -435,21 +446,23 @@ void RwPusService::handleUnrequestedReply(CommandMessage* reply) {
     const store_address_t sid =
         (sidAction.raw != StorageManagerIF::INVALID_ADDRESS) ? sidAction : sidDh;
 
-    // Map sender queue -> object id (robust when multiple RWs exist)
-    object_id_t obj = lastTargetObjectId_;
-    // MessageQueueMessage exposes the sender; CommandMessage derives from it
-    const MessageQueueId_t sender = reply->getSender();
-    auto it = qidToObj_.find(sender);
-    if (it != qidToObj_.end()) {
-      obj = it->second;
-    }
+    // Resolve which RW this unrequested reply belongs to, based on sender queue
+    const MessageQueueId_t senderQ = reply->getSender();
+    const object_id_t obj = resolveObjFromSender(senderQ);
 
 #if RW_PUS_VERBOSE
-    sif::warning << "[PUS220] UNREQUESTED: treating message as DATA (sid=0x" << std::hex << sid.raw
-                 << std::dec << "), object=0x" << std::hex << obj << std::dec
-                 << " senderQ=0x" << std::hex << sender << std::dec << std::endl;
+    sif::warning << "[PUS220] UNREQUESTED: sid=0x" << std::hex << sid.raw << std::dec
+                 << " senderQ=0x" << std::hex << senderQ << std::dec
+                 << " -> obj=0x" << std::hex << obj << std::dec << std::endl;
 #endif
-    (void)handleDataReplyAndEmitTm(sid, obj);
+
+    if (obj != objects::NO_OBJECT) {
+      (void)handleDataReplyAndEmitTm(sid, obj);
+    } else {
+#if RW_PUS_VERBOSE
+      sif::warning << "[PUS220] UNREQUESTED: unknown sender queue, dropping" << std::endl;
+#endif
+    }
   } else {
 #if RW_PUS_VERBOSE
     sif::warning << "[PUS220] UNREQUESTED: no store id in message -> ignore" << std::endl;
