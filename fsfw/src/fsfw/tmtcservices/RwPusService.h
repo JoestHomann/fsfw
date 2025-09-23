@@ -17,12 +17,17 @@
  *   3 = STATUS
  *  10 = SET_MODE (mode, submode)
  *
- * AppData convention (all TCs):
+ * Telemetry:
+ * 130 = TM_STATUS (legacy, compact)
+ * 131 = TM_STATUS_TYPED (versioned, with quality counters)
+ *
+ * AppData convention for TCs:
  *   [0..3]  Destination object ID (big-endian)
  *   [4..]   Subservice-specific payload
  *
- * Note: Device reply on the wire is STATUS_LEN bytes with CRC-16/CCITT:
- *   [AB,10,spdH,spdL,torH,torL,running,crcH,crcL]
+ * Typed TM (131) v1 payload (big-endian):
+ *   ver(1)=1 | objectId(4) | speedRpm(2) | torque_mNm(2) | running(1)
+ *   | flags(2) | error(2) | crcErrCnt(4) | malformedCnt(4) | timestampMs(4) | sampleCnt(2)
  */
 class RwPusService : public CommandingServiceBase {
  public:
@@ -32,6 +37,7 @@ class RwPusService : public CommandingServiceBase {
     STATUS = 3,
     SET_MODE = 10,
     TM_STATUS = 130,
+    TM_STATUS_TYPED = 131,  // NEW
   };
 
   RwPusService(object_id_t objectId, uint16_t apid, uint8_t serviceId = 220,
@@ -51,7 +57,7 @@ class RwPusService : public CommandingServiceBase {
   ReturnValue_t handleReply(const CommandMessage* reply, Command_t previousCommand, uint32_t* state,
                             CommandMessage* next, object_id_t objectId, bool* isStep) override;
 
-  // Parse RW status payload from store and emit TM_STATUS.
+  // Parse RW status payload from store and emit TM (130 legacy + 131 typed).
   ReturnValue_t handleDataReplyAndEmitTm(store_address_t sid, object_id_t objectId);
 
   // Handle late/unrequested data replies by resolving sender via qid->obj map.
@@ -69,7 +75,7 @@ class RwPusService : public CommandingServiceBase {
   // Multi-device support: object id -> sender queue
   std::unordered_map<object_id_t, MessageQueueId_t> objToQid_{};
 
-  // Optional per-object status cache for quick access/re-broadcasts
+  // Per-object status cache (optional use)
   struct RwStatusCache {
     int16_t  speedRpm{0};
     int16_t  torqueMnM{0};
@@ -77,6 +83,14 @@ class RwPusService : public CommandingServiceBase {
     uint32_t timestampMs{0};  // local uptime when parsed
   };
   std::unordered_map<object_id_t, RwStatusCache> lastStatus_{};
+
+  // Per-object quality counters for typed TM
+  struct RwStats {
+    uint32_t crcErrCnt{0};
+    uint32_t malformedCnt{0};
+    uint16_t sampleCnt{0};
+  };
+  std::unordered_map<object_id_t, RwStats> stats_{};
 
   // Helpers
   void rememberMapping(object_id_t obj, MessageQueueId_t q);

@@ -16,7 +16,8 @@ SUB_SET_SPEED = 1
 SUB_STOP      = 2
 SUB_STATUS    = 3
 SUB_SET_MODE  = 10
-SUB_TM_STATUS = 130        # TM subservice for STATUS reply (128 + 3)
+SUB_TM_STATUS = 130        # legacy compact TM
+SUB_TM_STATUS_TYPED = 131  # NEW: typed TM v1
 
 # DeviceHandler modes (FSFW default enum values)
 MODE_OFF    = 0
@@ -29,7 +30,7 @@ RW_HANDLER_OID = 0x00004402
 
 # ---- Receive tuning ----
 SOCKET_TIMEOUT_S   = 9.0   # timeout for a single recv() attempt
-WAIT_AFTER_CMD_S   = 10.0   # total listen window after a command
+WAIT_AFTER_CMD_S   = 10.0  # total listen window after a command
 
 # ---------- CRC16-CCITT (FALSE): poly 0x1021, init 0xFFFF ----------
 def crc16_ccitt_false(data: bytes, poly=0x1021, init=0xFFFF) -> int:
@@ -84,16 +85,36 @@ def send_tc(sock: socket.socket, packet: bytes):
     sock.send(packet)  # connected socket
 
 def handle_tm(data: bytes, oid: int):
-    # Minimal PUS TM parsing: primary header 6 bytes, then PUS sec-hdr (TM: [ver|sc|ssc?], service, subservice, ...).
+    """Decode minimal PUS TM. Prefer typed 220/131 if present; also decode legacy 220/130."""
     if len(data) < 10:
         return
     service  = data[7]
     subsvc   = data[8]
     print(f"TM: svc={service} subsvc={subsvc} len={len(data)}")
 
-    # Our STATUS TM?
+    # --- Typed TM (preferred): svc=220, sub=131, AppData v1 is 28 bytes:
+    # ver(1)=1 | objectId(4) | speed(i16) | torque(i16) | running(u8)
+    # | flags(u16) | error(u16) | crcErrCnt(u32) | malformedCnt(u32) | timestampMs(u32) | sampleCnt(u16)
+    if service == SERVICE and subsvc == SUB_TM_STATUS_TYPED:
+        # Search marker: [0x01, objectIdBE] after the PUS sec-hdr (we use a simple scan)
+        marker = bytes([1]) + oid.to_bytes(4, "big")
+        start = data.find(marker, 9)  # 9 ~ just after our coarse PUS sec-hdr sniff
+        if start != -1 and start + 28 <= len(data):
+            raw_app = data[start:start+28]
+            # Unpack as big-endian
+            ver, oid_be, speed, torque, running, flags, err, crc_cnt, mal_cnt, ts_ms, sample = \
+                struct.unpack(">B I h h B H H I I I H", raw_app)
+            print(
+                f"RW TM_STATUS_TYPED v{ver}: oid=0x{oid_be:08X}  "
+                f"speed={speed} rpm  torque={torque} mNm  running={running}  "
+                f"flags=0x{flags:04X} err=0x{err:04X}  "
+                f"crcErrCnt={crc_cnt} malformedCnt={mal_cnt} tsMs={ts_ms} sample={sample}"
+            )
+        return
+
+    # --- Legacy compact TM: svc=220, sub=130
     if service == SERVICE and subsvc == SUB_TM_STATUS:
-        # AppData layout (from RwPusService): oid(4)|speed(i16)|torque(i16)|running(u8)
+        # AppData layout (legacy): oid(4)|speed(i16)|torque(i16)|running(u8)
         marker = oid.to_bytes(4, "big")
         start = data.find(marker, 9)  # search after PUS sec-hdr
         if start != -1 and start + 9 <= len(data):
