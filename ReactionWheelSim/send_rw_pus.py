@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import socket, struct, itertools, binascii, time
+import socket, struct, itertools, binascii, time, threading
 
 # --------- Transport to FSFW UDP bridge (hosted example) ----------
 UDP_HOST = "127.0.0.1"
@@ -16,8 +16,12 @@ SUB_SET_SPEED = 1
 SUB_STOP      = 2
 SUB_STATUS    = 3
 SUB_SET_MODE  = 10
-SUB_TM_STATUS = 130        # legacy compact TM
-SUB_TM_STATUS_TYPED = 131  # NEW: typed TM v1
+SUB_TM_STATUS_LEGACY = 130       # legacy compact TM
+SUB_TM_STATUS_TYPED  = 131       # typed v1 TM
+
+# Housekeeping Service
+SVC_HK                 = 3
+SUB_HK_REPORT_PERIODIC = 25       # periodic HK report (Svc 3 / Sub 25)
 
 # DeviceHandler modes (FSFW default enum values)
 MODE_OFF    = 0
@@ -29,8 +33,8 @@ MODE_RAW    = 3
 RW_HANDLER_OID = 0x00004402
 
 # ---- Receive tuning ----
-SOCKET_TIMEOUT_S   = 9.0   # timeout for a single recv() attempt
-WAIT_AFTER_CMD_S   = 10.0  # total listen window after a command
+SOCKET_TIMEOUT_S   = 0.5   # short timeout for RX loop responsiveness
+PRINT_UNKNOWN_TM   = False # set True to print every TM
 
 # ---------- CRC16-CCITT (FALSE): poly 0x1021, init 0xFFFF ----------
 def crc16_ccitt_false(data: bytes, poly=0x1021, init=0xFFFF) -> int:
@@ -66,8 +70,8 @@ def build_tc(apid, service, subservice, app_data: bytes, seq_count):
     sec_crc       = sec + struct.pack(">H", crc)
     pkt           = ph + sec_crc
     # Debug print
-    print(f"PUS len(after PH)={len(sec_crc)}  CRC=0x{crc:04X}")
-    print("PUS field hex:", binascii.hexlify(sec_crc).decode())
+    #print(f"PUS len(after PH)={len(sec_crc)}  CRC=0x{crc:04X}")
+    #print("PUS field hex:", binascii.hexlify(sec_crc).decode())
     return pkt
 
 # ---------- Helpers ----------
@@ -84,66 +88,100 @@ def make_socket():
 def send_tc(sock: socket.socket, packet: bytes):
     sock.send(packet)  # connected socket
 
-def handle_tm(data: bytes, oid: int):
-    """Decode minimal PUS TM. Prefer typed 220/131 if present; also decode legacy 220/130."""
+# ---------- TM decoding ----------
+def parse_service_subservice(data: bytes):
+    """Very light PUS sniff: service=data[7], subservice=data[8] (works with our bridge)."""
     if len(data) < 10:
+        return None, None
+    return data[7], data[8]
+
+def handle_tm_typed_131(data: bytes, expect_oid: int):
+    """Decode typed TM (220/131, v1, 28B AppData)."""
+    # Search for marker [ver=1][OID_BE] after the PUS sec hdr region (~from index 9)
+    marker = bytes([1]) + expect_oid.to_bytes(4, "big")
+    start = data.find(marker, 9)
+    if start == -1 or start + 28 > len(data):
+        return False
+    raw_app = data[start:start+28]
+    try:
+        ver, oid_be, speed, torque, running, flags, err, crc_cnt, mal_cnt, ts_ms, sample = \
+            struct.unpack(">B I h h B H H I I I H", raw_app)
+    except struct.error:
+        return False
+    print(
+        f"[TM 220/131] v{ver} oid=0x{oid_be:08X}  "
+        f"speed={speed} rpm  torque={torque} mNm  running={running}  "
+        f"flags=0x{flags:04X} err=0x{err:04X}  "
+        f"crcErrCnt={crc_cnt} malformedCnt={mal_cnt} tsMs={ts_ms} sample={sample}"
+    )
+    return True
+
+def handle_tm_legacy_130(data: bytes, expect_oid: int):
+    """Decode legacy compact TM (220/130): OID(4) + speed(i16) + torque(i16) + running(u8)."""
+    marker = expect_oid.to_bytes(4, "big")
+    start = data.find(marker, 9)
+    if start == -1 or start + 9 > len(data):
+        return False
+    speed   = int.from_bytes(data[start+4:start+6], "big", signed=True)
+    torque  = int.from_bytes(data[start+6:start+8], "big", signed=True)
+    running = data[start+8]
+    print(f"[TM 220/130] oid=0x{expect_oid:08X}  speed={speed} rpm  torque={torque} mNm  running={running}")
+    return True
+
+def handle_tm_hk_3_25(data: bytes, expect_oid: int):
+    """Show periodic HK reports (Service 3 / Sub 25). We print SID if we can spot the OID."""
+    # Try to spot the SID (object ID in big-endian). Dataset ID likely follows (2 bytes).
+    oid_be = expect_oid.to_bytes(4, "big")
+    pos = data.find(oid_be, 9)
+    if pos != -1 and pos + 6 <= len(data):
+        set_id = int.from_bytes(data[pos+4:pos+6], "big")
+        print(f"[TM 3/25] Periodic HK  SID: oid=0x{expect_oid:08X}, set=0x{set_id:04X}, len={len(data)}")
+    else:
+        print(f"[TM 3/25] Periodic HK (len={len(data)})")
+    # Deep decoding of FSFW HK payload is possible, but format can vary; keeping it generic.
+
+def handle_tm(data: bytes, expect_oid: int):
+    """Decode minimal PUS TM set."""
+    svc, sub = parse_service_subservice(data)
+    if svc is None:
+        if PRINT_UNKNOWN_TM:
+            print(f"TM: len={len(data)} (short)")
         return
-    service  = data[7]
-    subsvc   = data[8]
-    print(f"TM: svc={service} subsvc={subsvc} len={len(data)}")
 
-    # --- Typed TM (preferred): svc=220, sub=131, AppData v1 is 28 bytes:
-    # ver(1)=1 | objectId(4) | speed(i16) | torque(i16) | running(u8)
-    # | flags(u16) | error(u16) | crcErrCnt(u32) | malformedCnt(u32) | timestampMs(u32) | sampleCnt(u16)
-    if service == SERVICE and subsvc == SUB_TM_STATUS_TYPED:
-        # Search marker: [0x01, objectIdBE] after the PUS sec-hdr (we use a simple scan)
-        marker = bytes([1]) + oid.to_bytes(4, "big")
-        start = data.find(marker, 9)  # 9 ~ just after our coarse PUS sec-hdr sniff
-        if start != -1 and start + 28 <= len(data):
-            raw_app = data[start:start+28]
-            # Unpack as big-endian
-            ver, oid_be, speed, torque, running, flags, err, crc_cnt, mal_cnt, ts_ms, sample = \
-                struct.unpack(">B I h h B H H I I I H", raw_app)
-            print(
-                f"RW TM_STATUS_TYPED v{ver}: oid=0x{oid_be:08X}  "
-                f"speed={speed} rpm  torque={torque} mNm  running={running}  "
-                f"flags=0x{flags:04X} err=0x{err:04X}  "
-                f"crcErrCnt={crc_cnt} malformedCnt={mal_cnt} tsMs={ts_ms} sample={sample}"
-            )
+    # Prefer typed status first
+    if svc == SERVICE and sub == SUB_TM_STATUS_TYPED:
+        if handle_tm_typed_131(data, expect_oid):
+            return
+        # fall through to generic print if parsing failed
+    if svc == SERVICE and sub == SUB_TM_STATUS_LEGACY:
+        if handle_tm_legacy_130(data, expect_oid):
+            return
+
+    if svc == SVC_HK and sub == SUB_HK_REPORT_PERIODIC:
+        handle_tm_hk_3_25(data, expect_oid)
         return
 
-    # --- Legacy compact TM: svc=220, sub=130
-    if service == SERVICE and subsvc == SUB_TM_STATUS:
-        # AppData layout (legacy): oid(4)|speed(i16)|torque(i16)|running(u8)
-        marker = oid.to_bytes(4, "big")
-        start = data.find(marker, 9)  # search after PUS sec-hdr
-        if start != -1 and start + 9 <= len(data):
-            speed   = int.from_bytes(data[start+4:start+6], "big", signed=True)
-            torque  = int.from_bytes(data[start+6:start+8], "big", signed=True)
-            running = data[start+8]
-            print(f"RW TM_STATUS: oid=0x{oid:08X}  speed={speed} rpm  torque={torque} mNm  running={running}")
+    # Generic print for other packets
+    if PRINT_UNKNOWN_TM or svc in (SERVICE, SVC_HK):
+        print(f"TM: svc={svc} subsvc={sub} len={len(data)}")
 
-def drain_tm(sock: socket.socket, oid: int, total_time_s: float = WAIT_AFTER_CMD_S):
-    """Read TM up to total_time_s seconds and decode TM_STATUS packets."""
-    deadline = time.time() + total_time_s
-    got_any = False
-    while True:
-        remaining = deadline - time.time()
-        if remaining <= 0:
-            break
-        # keep per-read timeout bounded
-        sock.settimeout(min(SOCKET_TIMEOUT_S, max(0.05, remaining)))
+# ---------- Background RX thread ----------
+def rx_loop(sock: socket.socket, get_oid_callable, stop_event: threading.Event):
+    """Continuously receive TM and print decoded info."""
+    while not stop_event.is_set():
         try:
             data = sock.recv(4096)
         except socket.timeout:
             continue
-        except Exception as e:
-            print(f"(recv error: {e})")
+        except OSError:
+            # socket closed
             break
-        got_any = True
+        except Exception as e:
+            print(f"(RX error: {e})")
+            break
+
+        oid = get_oid_callable()
         handle_tm(data, oid)
-    if not got_any:
-        print(f"(!) No TM received in {total_time_s:.1f}s window.")
 
 # ---------- Command builders ----------
 def rw_set_speed(sock, oid_u32, rpm, seq):
@@ -173,7 +211,7 @@ Commands:
   status               - Send STATUS request
   stop                 - Send STOP
   mode <name> [sub]    - Send SET_MODE, names: off,on,normal,raw  (default sub=0)
-  listen [seconds]     - Only listen for TM and print what arrives (default 5s)
+  listen [seconds]     - Just wait while background TM prints (default 5s)
   oid <hex|dec>        - Change target object id (default 0x00004402)
   who                  - Show current settings
   help                 - Show this help
@@ -194,94 +232,106 @@ def parse_int(s: str) -> int:
     return int(s, 10)
 
 def main():
-    print("Interactive PUS-220 sender for RW. Type 'help' for commands.")
-    oid = RW_HANDLER_OID
+    print("Interactive PUS-220 sender for RW. Background listener is ON. Type 'help' for commands.")
+    current_oid = {"oid": RW_HANDLER_OID}
     seq = itertools.count()
     sock = make_socket()  # one socket for TX+RX
 
-    while True:
+    # Start background RX thread
+    stop_event = threading.Event()
+    rx_thread = threading.Thread(
+        target=rx_loop,
+        args=(sock, lambda: current_oid["oid"], stop_event),
+        daemon=True,
+    )
+    rx_thread.start()
+
+    try:
+        while True:
+            try:
+                line = input(">> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+
+            if not line:
+                continue
+
+            parts = line.split()
+            cmd = parts[0].lower()
+
+            if cmd in ("exit", "quit"):
+                break
+
+            elif cmd == "help":
+                print(HELP)
+
+            elif cmd == "who":
+                print(f"UDP={UDP_HOST}:{UDP_PORT}  APID=0x{APID:03X}  OID=0x{current_oid['oid']:08X}  "
+                      f"rxTimeout={SOCKET_TIMEOUT_S}s  HK prints=Svc3/Sub25")
+
+            elif cmd == "oid":
+                if len(parts) < 2:
+                    print("usage: oid <hex|dec>")
+                    continue
+                try:
+                    current_oid["oid"] = parse_int(parts[1])
+                    print(f"OID set to 0x{current_oid['oid']:08X}")
+                except ValueError:
+                    print("Invalid OID")
+
+            elif cmd == "set":
+                if len(parts) < 2:
+                    print("usage: set <rpm>")
+                    continue
+                try:
+                    rpm = int(parts[1])
+                    print(f"Sending SET_SPEED {rpm} rpm")
+                    rw_set_speed(sock, current_oid["oid"], rpm, next(seq))
+                except ValueError:
+                    print("Invalid RPM")
+
+            elif cmd == "status":
+                print("Requesting STATUS")
+                rw_status(sock, current_oid["oid"], next(seq))
+
+            elif cmd == "stop":
+                print("Sending STOP")
+                rw_stop(sock, current_oid["oid"], next(seq))
+
+            elif cmd == "mode":
+                if len(parts) < 2:
+                    print("usage: mode <off|on|normal|raw> [submode]")
+                    continue
+                name = parts[1].lower()
+                if name not in MODE_NAMES:
+                    print("Unknown mode. Use: off, on, normal, raw")
+                    continue
+                try:
+                    sub = parse_int(parts[2]) if len(parts) >= 3 else 0
+                except ValueError:
+                    print("Invalid submode")
+                    continue
+                mode_val = MODE_NAMES[name]
+                print(f"Sending SET_MODE {name.upper()} (mode={mode_val}, sub={sub})")
+                rw_set_mode(sock, current_oid["oid"], mode_val, sub, next(seq))
+
+            elif cmd == "listen":
+                secs = float(parts[1]) if len(parts) >= 2 else 5.0
+                print(f"Listening for TM for {secs:.1f}s (background RX keeps printing)...")
+                time.sleep(secs)
+
+            else:
+                print("Unknown command. Type 'help'.")
+
+    finally:
+        # Clean shutdown
+        stop_event.set()
         try:
-            line = input(">> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-
-        if not line:
-            continue
-
-        parts = line.split()
-        cmd = parts[0].lower()
-
-        if cmd in ("exit", "quit"):
-            break
-
-        elif cmd == "help":
-            print(HELP)
-
-        elif cmd == "who":
-            print(f"UDP={UDP_HOST}:{UDP_PORT}  APID=0x{APID:03X}  OID=0x{oid:08X}  wait={WAIT_AFTER_CMD_S}s  timeout={SOCKET_TIMEOUT_S}s")
-
-        elif cmd == "oid":
-            if len(parts) < 2:
-                print("usage: oid <hex|dec>")
-                continue
-            try:
-                oid = parse_int(parts[1])
-                print(f"OID set to 0x{oid:08X}")
-            except ValueError:
-                print("Invalid OID")
-
-        elif cmd == "set":
-            if len(parts) < 2:
-                print("usage: set <rpm>")
-                continue
-            try:
-                rpm = int(parts[1])
-                print(f"Sending SET_SPEED {rpm} rpm")
-                rw_set_speed(sock, oid, rpm, next(seq))
-                print(f"...listening up to {WAIT_AFTER_CMD_S}s for TM")
-                drain_tm(sock, oid, WAIT_AFTER_CMD_S)
-            except ValueError:
-                print("Invalid RPM")
-
-        elif cmd == "status":
-            print("Requesting STATUS")
-            rw_status(sock, oid, next(seq))
-            print(f"...listening up to {WAIT_AFTER_CMD_S}s for TM")
-            drain_tm(sock, oid, WAIT_AFTER_CMD_S)
-
-        elif cmd == "stop":
-            print("Sending STOP")
-            rw_stop(sock, oid, next(seq))
-            print(f"...listening up to {WAIT_AFTER_CMD_S}s for TM")
-            drain_tm(sock, oid, WAIT_AFTER_CMD_S)
-
-        elif cmd == "mode":
-            if len(parts) < 2:
-                print("usage: mode <off|on|normal|raw> [submode]")
-                continue
-            name = parts[1].lower()
-            if name not in MODE_NAMES:
-                print("Unknown mode. Use: off, on, normal, raw")
-                continue
-            try:
-                sub = parse_int(parts[2]) if len(parts) >= 3 else 0
-            except ValueError:
-                print("Invalid submode")
-                continue
-            mode_val = MODE_NAMES[name]
-            print(f"Sending SET_MODE {name.upper()} (mode={mode_val}, sub={sub})")
-            rw_set_mode(sock, oid, mode_val, sub, next(seq))
-            print(f"...listening up to {WAIT_AFTER_CMD_S}s for TM")
-            drain_tm(sock, oid, WAIT_AFTER_CMD_S)
-
-        elif cmd == "listen":
-            secs = float(parts[1]) if len(parts) >= 2 else 5.0
-            print(f"Listening for TM for {secs:.1f}s...")
-            drain_tm(sock, oid, secs)
-
-        else:
-            print("Unknown command. Type 'help'.")
+            sock.close()
+        except Exception:
+            pass
+        rx_thread.join(timeout=1.0)
 
 if __name__ == "__main__":
     main()
