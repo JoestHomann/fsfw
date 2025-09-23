@@ -1,3 +1,4 @@
+// RwPusService.cpp
 #include "RwPusService.h"
 
 #include <cstring>
@@ -320,7 +321,6 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
   }
   if (!sawHdr) {
     // No recognizable header in the window -> treat as malformed window
-    // (Note: if sawHdr && !valid && !sawBadCrc is unlikely, but we keep only two buckets)
     if (len > 0) {
       ++stc.malformedCnt;
     }
@@ -341,6 +341,7 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
           .speedRpm = st.speedRpm, .torqueMnM = st.torqueMnM, .running = st.running, .timestampMs = ms};
       ++stc.sampleCnt;
 
+#if RW_PUS_ENABLE_LEGACY_130
       // -------------------------
       // TM[220,130] LEGACY (compact 9B payload)
       // -------------------------
@@ -362,6 +363,7 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
           (void)tmHelper.storeAndSendTmPacket();
         }
       }
+#endif  // RW_PUS_ENABLE_LEGACY_130
 
       // -------------------------
       // TM[220,131] TYPED v1 (28B payload)

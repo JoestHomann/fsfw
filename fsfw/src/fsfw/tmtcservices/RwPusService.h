@@ -1,12 +1,13 @@
+// RwPusService.h
 #pragma once
 
+#include <unordered_map>
+
 #include "commonObjects.h"
+#include "fsfw/ipc/MessageQueueIF.h"  // for MessageQueueId_t
 #include "fsfw/storagemanager/StorageManagerIF.h"
 #include "fsfw/storagemanager/storeAddress.h"
 #include "fsfw/tmtcservices/CommandingServiceBase.h"
-#include "fsfw/ipc/MessageQueueIF.h"  // for MessageQueueId_t
-
-#include <unordered_map>
 
 /**
  * Minimal PUS service for a reaction wheel commander.
@@ -77,9 +78,9 @@ class RwPusService : public CommandingServiceBase {
 
   // Per-object status cache (optional use)
   struct RwStatusCache {
-    int16_t  speedRpm{0};
-    int16_t  torqueMnM{0};
-    uint8_t  running{0};
+    int16_t speedRpm{0};
+    int16_t torqueMnM{0};
+    uint8_t running{0};
     uint32_t timestampMs{0};  // local uptime when parsed
   };
   std::unordered_map<object_id_t, RwStatusCache> lastStatus_{};
@@ -101,4 +102,10 @@ class RwPusService : public CommandingServiceBase {
 // Debug On/Off switch (set to 1 to enable debug output)
 #ifndef RW_PUS_VERBOSE
 #define RW_PUS_VERBOSE 0
+#endif
+
+// On/Off switch for legacy TM 220/130 (Set to 0 to disable sending the legacy compact status
+// packet)
+#ifndef RW_PUS_ENABLE_LEGACY_130
+#define RW_PUS_ENABLE_LEGACY_130 0
 #endif
