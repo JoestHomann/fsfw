@@ -14,8 +14,8 @@
 #include "fsfw/parameters/ParameterMessage.h"
 #include "fsfw/returnvalues/returnvalue.h"
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
-#include "fsfw/timemanager/Clock.h"  // uptime in ms
-#include "fsfw/datapoollocal/ProvidesDataPoolSubscriptionIF.h"  // RegularHkPeriodicParams
+#include "fsfw/timemanager/Clock.h"
+#include "fsfw/datapoollocal/ProvidesDataPoolSubscriptionIF.h"
 
 #if RW_VERBOSE
 static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
@@ -36,7 +36,6 @@ static inline void dumpHexWarn(const char*, const uint8_t*, size_t) {}
 ReactionWheelsHandler::ReactionWheelsHandler(object_id_t objectId, object_id_t comIF,
                                              CookieIF* cookie)
     : DeviceHandlerBase(objectId, comIF, cookie) {
-  // Configure RX ring as FIFO of receive sizes to mitigate bursty UART
   rxRing.setToUseReceiveSizeFIFO(/*fifoDepth*/ 8);
   (void)rxRing.initialize();
 }
@@ -59,12 +58,10 @@ void ReactionWheelsHandler::modeChanged() {
 }
 
 ReturnValue_t ReactionWheelsHandler::initializeAfterTaskCreation() {
-  // Base init
   ReturnValue_t rv = DeviceHandlerBase::initializeAfterTaskCreation();
   if (rv != returnvalue::OK) {
     return rv;
   }
-  // Subscribe periodic HK
   const sid_t hkSid{getObjectId(), DATASET_ID_HK};
   subdp::RegularHkPeriodicParams params(hkSid, /*enable*/ true, /*period s*/ RwConfig::HK_PERIOD_S);
   auto* hkMgr = getHkManagerHandle();
@@ -130,15 +127,26 @@ ReturnValue_t ReactionWheelsHandler::drainRxIntoRing() {
 }
 
 ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t* id) {
-  // Timeout supervision for previous poll
+  // 1) Wenn ein STATUS-Poll noch aussteht: KEIN weiterer Poll
   if (statusAwaitCnt >= 0) {
     if (++statusAwaitCnt > STATUS_TIMEOUT_CYCLES) {
       triggerEvent(RwEvents::TIMEOUT, 0, 0);
-      statusAwaitCnt = -1;
+      statusAwaitCnt = -1; // Timeout -> Poll-Fenster schließen
+    } else {
+      *id = DeviceHandlerIF::NO_COMMAND_ID;
+      return NOTHING_TO_SEND; // weiter warten
     }
   }
 
-  // Immediate poll for TC-driven STATUS
+  // 2) Direkt nach externem Kommando Polls hemmen
+  uint32_t nowMs = 0;
+  Clock::getUptime(&nowMs);
+  if (lastExtCmdMs != 0 && (nowMs - lastExtCmdMs) < POLL_INHIBIT_MS) {
+    *id = DeviceHandlerIF::NO_COMMAND_ID;
+    return NOTHING_TO_SEND;
+  }
+
+  // 3) TC-getriebener Sofort-Poll
   if (pendingTcStatusTm) {
 #if RW_VERBOSE
     sif::warning << "buildNormalDeviceCommand: tcStatusPending=true -> immediate STATUS poll"
@@ -158,7 +166,7 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
     return returnvalue::OK;
   }
 
-  // Periodic STATUS poll
+  // 4) Periodischer STATUS-Poll
   if (++statusPollCnt >= statusPollDivider) {
     statusPollCnt = 0;
     const size_t total = RwProtocol::buildStatusReq(txBuf, sizeof(txBuf));
@@ -193,7 +201,6 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       int16_t rpm = 0;
       std::memcpy(&rpm, data, sizeof(rpm));
 
-      // Clamp against runtime parameter (allow +/- limit). Fallback if p_maxRpm <= 0.
       int16_t lim = p_maxRpm;
       if (lim <= 0) {
         lim = RwConfig::MAX_RPM_DEFAULT;
@@ -208,18 +215,17 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       rawPacket = txBuf;
       rawPacketLen = total;
       dumpHexWarn("DH TX (TC frame: SET_SPEED)", txBuf, total);
+      Clock::getUptime(&lastExtCmdMs);   // Polls kurz sperren
       return returnvalue::OK;
     }
 
     case CMD_SET_TORQUE: {
-      // Payload is int16_t mNm
       if (len < sizeof(int16_t)) {
         return returnvalue::FAILED;
       }
       int16_t tq = 0;
       std::memcpy(&tq, data, sizeof(tq));
 
-      // Absolute safety clamp in mNm
       const int16_t lim = RwConfig::MAX_TORQUE_MNM_DEFAULT;
       if (lim > 0) {
         if (tq >  lim) tq =  lim;
@@ -233,6 +239,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       rawPacket = txBuf;
       rawPacketLen = total;
       dumpHexWarn("DH TX (TC frame: SET_TORQUE)", txBuf, total);
+      Clock::getUptime(&lastExtCmdMs);   // Polls kurz sperren
       return returnvalue::OK;
     }
 
@@ -244,6 +251,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       rawPacket = txBuf;
       rawPacketLen = total;
       dumpHexWarn("DH TX (TC frame: STOP)", txBuf, total);
+      Clock::getUptime(&lastExtCmdMs);   // Polls kurz sperren
       return returnvalue::OK;
     }
 
@@ -269,7 +277,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
 
 void ReactionWheelsHandler::fillCommandAndReplyMap() {
   insertInCommandMap(CMD_SET_SPEED,   false, 0);
-  insertInCommandMap(CMD_SET_TORQUE,  false, 0);  // supports direct torque command
+  insertInCommandMap(CMD_SET_TORQUE,  false, 0);
   insertInCommandMap(CMD_STOP,        false, 0);
 
   insertInCommandAndReplyMap(CMD_STATUS_POLL, 5, &replySet, RwProtocol::STATUS_LEN,
@@ -398,16 +406,24 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   const uint8_t* pkt = replySet.raw.isValid() ? replySet.raw.value : packet;
   dumpHexWarn("interpretDeviceReply: frame", pkt, RwProtocol::STATUS_LEN);
 
-  // Example decoding: adjust byte offsets to your wire protocol
+  // Beispiel-Offsets: ggf. an dein Protokoll anpassen
   const int16_t speed   = static_cast<int16_t>((pkt[2] << 8) | pkt[3]);
   const int16_t torque  = static_cast<int16_t>((pkt[4] << 8) | pkt[5]);
   const uint8_t running = pkt[6];
 
-  sif::info << "RW STATUS: speed=" << speed << " RPM, torque=" << torque
-            << " mNm, running=" << int(running) << std::endl;
+  static uint32_t logCtr = 0;
+#if !defined(RW_STATUS_LOG_EVERY)
+#define RW_STATUS_LOG_EVERY RwConfig::STATUS_LOG_EVERY
+#endif
+  if ((++logCtr % RW_STATUS_LOG_EVERY) == 0) {
+    sif::info << "RW STATUS: speed=" << speed << " RPM, torque=" << torque
+              << " mNm, running=" << int(running) << std::endl;
+  }
 
-  // Update HK snapshot
+  // ---- HK snapshot (saubere Dataset-Transaktion) ----
+  hkSet.read();
   hkSet.setValidity(false, true);
+
   hkSet.speedRpm.value     = speed;
   hkSet.torque_mNm.value   = torque;
   hkSet.running.value      = running;
@@ -420,6 +436,31 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   Clock::getUptime(&ms);
   hkSet.timestampMs.value = ms;
 
+  // Simple FDIR
+  const bool stuckCond = (running == 0) && (std::abs(static_cast<int>(speed)) > STUCK_RPM_THRESH);
+  if (stuckCond) {
+    if (++stuckCnt >= STUCK_DEBOUNCE_FRAMES) {
+      triggerEvent(RwEvents::STUCK, static_cast<uint32_t>(speed),
+                   static_cast<uint32_t>(running));
+      stuckCnt = 0;
+      hkSet.flags.value |= 0x0001;
+    }
+  } else {
+    stuckCnt = 0;
+  }
+
+  const bool torqueHigh = (std::abs(static_cast<int>(torque)) > TORQUE_HIGH_MNM_THRESH);
+  if (torqueHigh) {
+    if (++torqueHighCnt >= TORQUE_DEBOUNCE_FRAMES) {
+      triggerEvent(RwEvents::TORQUE_HIGH, static_cast<uint32_t>(torque), 0);
+      torqueHighCnt = 0;
+      hkSet.flags.value |= 0x0002;
+    }
+  } else {
+    torqueHighCnt = 0;
+  }
+
+  // Validieren & committen (einmal pro Frame)
   hkSet.speedRpm.setValid(true);
   hkSet.torque_mNm.setValid(true);
   hkSet.running.setValid(true);
@@ -429,47 +470,9 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   hkSet.malformedCnt.setValid(true);
   hkSet.timestampMs.setValid(true);
   hkSet.setValidity(true, true);
+  hkSet.commit();
 
-  // Simple FDIR examples
-  const bool stuckCond = (hkSet.running.value == 0) &&
-                         (std::abs(static_cast<int>(hkSet.speedRpm.value)) > STUCK_RPM_THRESH);
-  if (stuckCond) {
-    if (++stuckCnt >= STUCK_DEBOUNCE_FRAMES) {
-      triggerEvent(RwEvents::STUCK, static_cast<uint32_t>(hkSet.speedRpm.value),
-                   static_cast<uint32_t>(hkSet.running.value));
-      stuckCnt = 0;
-      hkSet.flags.value |= 0x0001;
-      hkSet.flags.setValid(true);
-    }
-  } else {
-    stuckCnt = 0;
-  }
-
-  const bool torqueHigh =
-      (std::abs(static_cast<int>(hkSet.torque_mNm.value)) > TORQUE_HIGH_MNM_THRESH);
-  if (torqueHigh) {
-    if (++torqueHighCnt >= TORQUE_DEBOUNCE_FRAMES) {
-      triggerEvent(RwEvents::TORQUE_HIGH, static_cast<uint32_t>(hkSet.torque_mNm.value), 0);
-      torqueHighCnt = 0;
-      hkSet.flags.value |= 0x0002;
-      hkSet.flags.setValid(true);
-    }
-  } else {
-    torqueHighCnt = 0;
-  }
-
-  if (hkSet.error.value != 0) {
-    triggerEvent(RwEvents::ERROR_CODE, static_cast<uint32_t>(hkSet.error.value), 0);
-  }
-
-  // Preserve latest raw frame for debugging/ground pull
-  if (!replySet.raw.isValid()) {
-    std::memcpy(replySet.raw.value, pkt, RwProtocol::STATUS_LEN);
-    replySet.raw.setValid(true);
-    replySet.setValidity(true, true);
-  }
-
-  // If this was a TC-driven status pull, report reply to requester
+  // TC-getriebene STATUS-Antwort zurückgeben
   if (pendingTcStatusTm) {
     if (pendingTcStatusReportedTo != MessageQueueIF::NO_QUEUE) {
       (void)actionHelper.reportData(pendingTcStatusReportedTo, CMD_STATUS, pkt,
@@ -492,12 +495,12 @@ ReturnValue_t ReactionWheelsHandler::initializeLocalDataPool(localpool::DataPool
                                                              LocalDataPoolManager&) {
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::RAW_REPLY),
                            new PoolEntry<uint8_t>(RwProtocol::STATUS_LEN));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM),   new PoolEntry<int16_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm),  new PoolEntry<int16_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_RUNNING),     new PoolEntry<uint8_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_FLAGS),       new PoolEntry<uint16_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_ERROR),       new PoolEntry<uint16_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT), new PoolEntry<uint32_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM),     new PoolEntry<int16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm),    new PoolEntry<int16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_RUNNING),       new PoolEntry<uint8_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_FLAGS),         new PoolEntry<uint16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_ERROR),         new PoolEntry<uint16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT),   new PoolEntry<uint32_t>(1));
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_MALFORMED_CNT), new PoolEntry<uint32_t>(1));
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS),  new PoolEntry<uint32_t>(1));
   return returnvalue::OK;
@@ -513,7 +516,6 @@ ReturnValue_t ReactionWheelsHandler::executeAction(ActionId_t actionId,
 #endif
   const auto cmd = static_cast<DeviceCommandId_t>(actionId);
   if (cmd == CMD_STATUS) {
-    // Defer immediate STATUS poll to buildNormalDeviceCommand() in next cycle
     pendingTcStatusTm = true;
     pendingTcStatusReportedTo = commandedBy;
   }

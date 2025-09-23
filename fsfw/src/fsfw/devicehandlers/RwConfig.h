@@ -11,8 +11,9 @@ constexpr uint32_t DELAY_OFF_TO_ON_MS    = 100;
 constexpr uint32_t DELAY_ON_TO_NORMAL_MS = 100;
 
 // ----- Polling / Timeouts ---------------------------------------------------
-constexpr uint32_t STATUS_POLL_DIVIDER_DEFAULT = 3; // PST cycles between periodic STATUS polls
-constexpr uint8_t  STATUS_TIMEOUT_CYCLES       = 6;   // cycles until timeout after a poll
+constexpr uint32_t STATUS_POLL_DIVIDER_DEFAULT = 1; // PST cycles between periodic STATUS polls
+constexpr uint8_t  STATUS_TIMEOUT_CYCLES       = 4;   // cycles until timeout after a poll
+constexpr uint32_t STATUS_LOG_EVERY = 20; // log every 20th STATUS frame
 
 // ----- RX Ring Buffer -------------------------------------------------------
 constexpr std::size_t RX_RING_SIZE   = 256;
@@ -23,7 +24,7 @@ constexpr int16_t  MAX_RPM_DEFAULT         = 4000; // clamp SET_SPEED (absolute 
 constexpr uint16_t MAX_SLEW_RPM_S_DEFAULT  = 0;    // 0 = disabled (no slew limiting)
 
 // Clamp for torque command (absolute, in mNm)
-constexpr int16_t  MAX_TORQUE_MNM_DEFAULT  = 1500; // adjust to your wheel capability
+constexpr int16_t  MAX_TORQUE_MNM_DEFAULT  = 500; // adjust to your wheel capability
 
 // ----- FDIR Thresholds ------------------------------------------------------
 constexpr int16_t STUCK_RPM_THRESH       = 50;   // running == 0 but |rpm| > threshold
@@ -38,7 +39,7 @@ constexpr uint32_t MALFORMED_EVENT_THRESH  = 10;
 // ----- Housekeeping (Service 3) ---------------------------------------------
 // Period for periodic HK generation by the LocalDataPoolManager (seconds).
 // Note: Actual TM emission rate also depends on global HK distributor settings.
-constexpr float HK_PERIOD_S = 100.0f; // HK_Period = PST_Period * nonDiagIntervalFactor * HK_PERIOD_S
+constexpr float HK_PERIOD_S = 1000.0f; // HK_Period = PST_Period * nonDiagIntervalFactor * HK_PERIOD_S = 0,1 * 5 * X 
 
 // ----- Typed TM (PUS 220) versions -----------------------------------------
 // Keep small version integers to allow forward-compatible parsing on ground.

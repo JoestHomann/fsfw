@@ -1,4 +1,5 @@
 #include "AcsController.h"
+
 #include <cmath>
 #include <limits>
 
@@ -7,15 +8,16 @@
 // Objects IDs (contains IPC_STORE)
 #include "commonObjects.h"
 // Our RW handler header for command IDs + Pool IDs
-#include "fsfw/devicehandlers/ReactionWheelsHandler.h"
-#include "fsfw/ipc/CommandMessage.h"
 #include "fsfw/devicehandlers/DeviceHandlerMessage.h"
+#include "fsfw/devicehandlers/ReactionWheelsHandler.h"
 #include "fsfw/devicehandlers/RwProtocol.h"
+#include "fsfw/ipc/CommandMessage.h"
 
-namespace { constexpr float PI_F = 3.14159265358979323846f; }
+namespace {
+constexpr float PI_F = 3.14159265358979323846f;
+}
 
-AcsController::AcsController(object_id_t objectId,
-                             std::array<object_id_t, 4> wheelIds,
+AcsController::AcsController(object_id_t objectId, std::array<object_id_t, 4> wheelIds,
                              const acs::Config& cfg)
     : SystemObject(objectId),
       cfg_(cfg),
@@ -57,8 +59,7 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
       // Fallback until HK valid: use last commanded
       tauW_meas[i] = tauWheelCmd_[i];
 #ifdef ACS_VERBOSE
-      sif::warning << "ACS: RW" << i
-                   << " HK torque invalid -> fallback to commanded." << std::endl;
+      sif::warning << "ACS: RW" << i << " HK torque invalid -> fallback to commanded." << std::endl;
 #endif
     }
   }
@@ -186,13 +187,15 @@ void AcsController::sendWheelTorques_(const std::array<float, 4>& tauWheel_mNm) 
     // Per-wheel safety clamp (in mNm) before converting to int16
     float tq = tauWheel_mNm[i];
     const float LIM = cfg_.limits.torqueMax_mNm;
-    if (tq >  LIM) tq =  LIM;
+    if (tq > LIM) tq = LIM;
     if (tq < -LIM) tq = -LIM;
 
     // Convert float mNm -> int16 mNm (rounded) and guard against overflow
     int32_t rounded = static_cast<int32_t>(std::lround(tq));
-    if (rounded > std::numeric_limits<int16_t>::max()) rounded = std::numeric_limits<int16_t>::max();
-    if (rounded < std::numeric_limits<int16_t>::min()) rounded = std::numeric_limits<int16_t>::min();
+    if (rounded > std::numeric_limits<int16_t>::max())
+      rounded = std::numeric_limits<int16_t>::max();
+    if (rounded < std::numeric_limits<int16_t>::min())
+      rounded = std::numeric_limits<int16_t>::min();
     const int16_t torque_mNm = static_cast<int16_t>(rounded);
 
     // Build wire frame for this wheel (RAW command)
@@ -210,8 +213,8 @@ void AcsController::sendWheelTorques_(const std::array<float, 4>& tauWheel_mNm) 
     const ReturnValue_t res = ipcStore_->addData(&storeId, frame, total);
     if (res != returnvalue::OK) {
 #ifdef ACS_VERBOSE
-      sif::warning << "ACS: IPC store addData failed, skipping RAW torque cmd for RW idx "
-                   << i << std::endl;
+      sif::warning << "ACS: IPC store addData failed, skipping RAW torque cmd for RW idx " << i
+                   << std::endl;
 #endif
       continue;
     }

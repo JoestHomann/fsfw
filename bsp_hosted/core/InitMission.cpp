@@ -204,7 +204,7 @@ void InitMission::createTasks() {
       tasks::makeWinPriority(tasks::PriorityClass::CLASS_HIGH, tasks::PriorityNumber::HIGHEST);
 #endif
   FixedTimeslotTaskIF* testDevicesTimeslotTask = taskFactory->createFixedTimeslotTask(
-      "PST_TEST_TASK", currPrio, PeriodicTaskIF::MINIMUM_STACK_SIZE, 2.0, deadlineMissedFunc);
+      "PST_TEST_TASK", currPrio, PeriodicTaskIF::MINIMUM_STACK_SIZE, 0.1, deadlineMissedFunc);
   result = pst::pollingSequenceDevices(testDevicesTimeslotTask);
   if (result != returnvalue::OK) {
 #if FSFW_CPP_OSTREAM_ENABLED == 1

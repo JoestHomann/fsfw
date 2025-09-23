@@ -34,7 +34,7 @@ struct Limits {
 
 struct Timing {
   // Controller step in milliseconds; used for scheduling and discretization
-  uint32_t dtMs{50};
+  uint32_t dtMs{100};
   constexpr float dt() const { return 1e-3f * static_cast<float>(dtMs); }
 };
 
@@ -51,15 +51,15 @@ struct Config {
 
 // Default config values – adjust in your mission code if needed.
 inline constexpr Config DEFAULT{
-    /* timing  */ Timing{50},
-    /* inertia */ InertiaDiag{0.02f, 0.02f, 0.03f},
+    /* timing  */ Timing{100},
+    /* inertia */ InertiaDiag{8.0f, 8.0f, 9.0f},
     /* Bcols   */ Axes3x4{{
         1.0f, 0.0f, 0.0f,   // b1
         0.0f, 1.0f, 0.0f,   // b2
         0.0f, 0.0f, 1.0f,   // b3
-        0.0f, 0.0f, 1.0f    // b4 (duplicate Z for demo; replace with real axis)
+        0.57735f, 0.57735f, 0.57735f          // b4
     }},
-    /* limits  */ Limits{20.0f, 200.0f},
+    /* limits  */ Limits{500.0f, 8000.0f},
     /* gyro    */ GyroNoise{0.03f, 5e-4f, 25.0f}
 };
 

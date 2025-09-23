@@ -152,6 +152,10 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   static constexpr uint8_t STATUS_TIMEOUT_CYCLES = RwConfig::STATUS_TIMEOUT_CYCLES;
   int8_t statusAwaitCnt{-1};
 
+  // Nach externen Kommandos (Torque/Speed/Stop) Polls kurz hemmen
+  uint32_t lastExtCmdMs{0};
+  static constexpr uint32_t POLL_INHIBIT_MS = 50;  // 50 ms Poll-Sperre nach ext. Cmd
+
   // TC-driven STATUS reply routing
   bool             pendingTcStatusTm{false};
   MessageQueueId_t pendingTcStatusReportedTo{MessageQueueIF::NO_QUEUE};

@@ -38,7 +38,7 @@ MODE_RAW    = 3
 
 # Default destination objects
 RW_HANDLER_OID = 0x00004402
-ACS_CTRL_OID   = 0x0000AC51   # placeholder; set to your objects::RW_ACS_CTRL with 'acs_oid'
+ACS_CTRL_OID   = 0x4302AC51   # RW_ACS_CTRL
 
 # ---- Receive tuning ----
 SOCKET_TIMEOUT_S   = 0.5   # short timeout for RX loop responsiveness

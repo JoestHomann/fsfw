@@ -65,14 +65,14 @@ class AcsController : public SystemObject, public ExecutableObjectIF {
   Guidance    guidance_;
   RwAllocator allocator_;
 
-  std::array<float,3> Kp_{ {0.2f, 0.2f, 0.2f} };
-  std::array<float,3> Kd_{ {0.05f, 0.05f, 0.05f} };
+  std::array<float,3> Kp_ = {200.0f, 0.0f, 0.0f};
+  std::array<float,3> Kd_ = { 40.0f,  0.0f,  0.0f};
   std::array<float,3> tauDes_{ {0,0,0} };
   std::array<float,4> tauWheelCmd_{ {0,0,0,0} };
   std::array<float,4> qErr_{ {1,0,0,0} };
   uint32_t dtMs_{50};
 
-  // NEW: messaging resources
+  // messaging resources
   MessageQueueIF*    myQueue_{nullptr};
   StorageManagerIF*  ipcStore_{nullptr};
 
@@ -85,3 +85,7 @@ class AcsController : public SystemObject, public ExecutableObjectIF {
   // RW hookup
   void sendWheelTorques_(const std::array<float,4>& tauWheel_mNm);
 };
+
+#ifndef ACS_VERBOSE
+#define ACS_VERBOSE 1
+#endif
