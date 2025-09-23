@@ -1,44 +1,41 @@
-// RwPusService.h
+// fsfw/tmtcservices/RwPusService.h
 #pragma once
 
-#include <unordered_map>
-
 #include "commonObjects.h"
-#include "fsfw/ipc/MessageQueueIF.h"  // for MessageQueueId_t
 #include "fsfw/storagemanager/StorageManagerIF.h"
 #include "fsfw/storagemanager/storeAddress.h"
 #include "fsfw/tmtcservices/CommandingServiceBase.h"
 
+#include <unordered_map>
+
 /**
- * Minimal PUS service for a reaction wheel commander.
+ * English comments!
+ * PUS Service 220 for Reaction Wheel & ACS control.
  *
- * Subservices:
- *   1 = SET_SPEED (int16 RPM, big-endian in AppData)
- *   2 = STOP
- *   3 = STATUS
- *  10 = SET_MODE (mode, submode)
+ * Telecommands (TC):
+ *   1   = SET_SPEED      (AppData: RW_OID(4) | i16 rpm)
+ *   2   = STOP           (AppData: RW_OID(4))
+ *   3   = STATUS         (AppData: RW_OID(4))
+ *   4   = SET_TORQUE     (AppData: RW_OID(4) | i16 torque_mNm)   // NEW
+ *   10  = SET_MODE       (AppData: TARGET_OID(4) | u8 mode | u8 submode)
+ *   140 = ACS_SET_ENABLE (AppData: ACS_OID(4) | u8 enable)       // NEW
  *
- * Telemetry:
- * 130 = TM_STATUS (legacy, compact)
- * 131 = TM_STATUS_TYPED (versioned, with quality counters)
- *
- * AppData convention for TCs:
- *   [0..3]  Destination object ID (big-endian)
- *   [4..]   Subservice-specific payload
- *
- * Typed TM (131) v1 payload (big-endian):
- *   ver(1)=1 | objectId(4) | speedRpm(2) | torque_mNm(2) | running(1)
- *   | flags(2) | error(2) | crcErrCnt(4) | malformedCnt(4) | timestampMs(4) | sampleCnt(2)
+ * Telemetry (TM):
+ *   220/130 = TM_STATUS (legacy wheel status typed by raw-parser in Python tool)
+ *   220/132 = TM_ACS_HK_TYPED  (AppData: ACS_OID(4) | u8 ver | u8 enabled |
+ *                               float kd[3] | float tauDes[3] | float tauWheel[4] | u32 dt_ms)
  */
 class RwPusService : public CommandingServiceBase {
  public:
   enum Subservice : uint8_t {
-    SET_SPEED = 1,
-    STOP = 2,
-    STATUS = 3,
-    SET_MODE = 10,
-    TM_STATUS = 130,
-    TM_STATUS_TYPED = 131,  // NEW
+    SET_SPEED       = 1,
+    STOP            = 2,
+    STATUS          = 3,
+    SET_TORQUE      = 4,    // NEW
+    SET_MODE        = 10,
+    TM_STATUS       = 130,
+    TM_ACS_HK_TYPED = 132,  // NEW
+    ACS_SET_ENABLE  = 140   // NEW
   };
 
   RwPusService(object_id_t objectId, uint16_t apid, uint8_t serviceId = 220,
@@ -58,11 +55,14 @@ class RwPusService : public CommandingServiceBase {
   ReturnValue_t handleReply(const CommandMessage* reply, Command_t previousCommand, uint32_t* state,
                             CommandMessage* next, object_id_t objectId, bool* isStep) override;
 
-  // Parse RW status payload from store and emit TM (130 legacy + 131 typed).
+  // Parse RW status payload from store and emit TM_STATUS (220/130).
   ReturnValue_t handleDataReplyAndEmitTm(store_address_t sid, object_id_t objectId);
 
-  // Handle late/unrequested data replies by resolving sender via qid->obj map.
+  // Handle late/unrequested data replies by trying to parse & emit TM.
   void handleUnrequestedReply(CommandMessage* reply) override;
+
+  // Emit typed ACS HK (220/132) for given ACS object, returns OK on success.
+  ReturnValue_t emitAcsTypedHk(object_id_t acsObjectId);
 
  private:
   // Stores (resolved in initialize())
@@ -70,42 +70,14 @@ class RwPusService : public CommandingServiceBase {
   StorageManagerIF* tmStore = nullptr;
   StorageManagerIF* tcStore = nullptr;
 
-  // Robust routing for unrequested replies: sender queue -> object id
+  // Route unrequested replies robustly: sender queue -> object id
   std::unordered_map<MessageQueueId_t, object_id_t> qidToObj_{};
 
-  // Multi-device support: object id -> sender queue
-  std::unordered_map<object_id_t, MessageQueueId_t> objToQid_{};
-
-  // Per-object status cache (optional use)
-  struct RwStatusCache {
-    int16_t speedRpm{0};
-    int16_t torqueMnM{0};
-    uint8_t running{0};
-    uint32_t timestampMs{0};  // local uptime when parsed
-  };
-  std::unordered_map<object_id_t, RwStatusCache> lastStatus_{};
-
-  // Per-object quality counters for typed TM
-  struct RwStats {
-    uint32_t crcErrCnt{0};
-    uint32_t malformedCnt{0};
-    uint16_t sampleCnt{0};
-  };
-  std::unordered_map<object_id_t, RwStats> stats_{};
-
-  // Helpers
-  void rememberMapping(object_id_t obj, MessageQueueId_t q);
-  MessageQueueId_t getQidFor(object_id_t obj) const;
-  object_id_t resolveObjFromSender(MessageQueueId_t sender) const;
+  // Fallback if sender mapping is not known yet
+  object_id_t lastTargetObjectId_{objects::NO_OBJECT};
 };
 
 // Debug On/Off switch (set to 1 to enable debug output)
 #ifndef RW_PUS_VERBOSE
 #define RW_PUS_VERBOSE 0
-#endif
-
-// On/Off switch for legacy TM 220/130 (Set to 0 to disable sending the legacy compact status
-// packet)
-#ifndef RW_PUS_ENABLE_LEGACY_130
-#define RW_PUS_ENABLE_LEGACY_130 0
 #endif

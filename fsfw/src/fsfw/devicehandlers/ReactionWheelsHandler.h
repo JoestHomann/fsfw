@@ -1,3 +1,4 @@
+// fsfw/devicehandlers/ReactionWheelsHandler.h
 #pragma once
 
 #include "RwProtocol.h"
@@ -7,8 +8,6 @@
 #include "fsfw/datapoollocal/LocalDataSet.h"
 #include "fsfw/datapoollocal/LocalPoolVector.h"
 #include "fsfw/datapoollocal/LocalPoolVariable.h"
-#include "fsfw/datapoollocal/LocalPoolDataSetBase.h" // for getDataSetHandle signature
-#include "fsfw/datapoollocal/localPoolDefinitions.h" // for sid_t, pool_rwm_t
 #include "fsfw/devicehandlers/DeviceHandlerBase.h"
 #include "fsfw/ipc/MessageQueueIF.h"
 #include "fsfw/returnvalues/returnvalue.h"
@@ -24,7 +23,8 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
     CMD_SET_SPEED   = 0x01,
     CMD_STOP        = 0x02,
     CMD_STATUS      = 0x03,
-    CMD_STATUS_POLL = 0x1003
+    CMD_STATUS_POLL = 0x1003,
+    CMD_SET_TORQUE  = 0x04  // NEW
   };
 
   // Unified internal reply ID
@@ -40,14 +40,14 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
 
   // Local pool IDs
   enum class PoolIds : lp_id_t {
-    RAW_REPLY = 1,
-    HK_SPEED_RPM = 2,
-    HK_TORQUE_mNm = 3,
-    HK_RUNNING = 4,
-    HK_FLAGS = 5,
-    HK_ERROR = 6,
-    HK_CRC_ERR_CNT = 7,
-    HK_MALFORMED_CNT = 8,
+    RAW_REPLY       = 1,
+    HK_SPEED_RPM    = 2,
+    HK_TORQUE_mNm   = 3,
+    HK_RUNNING      = 4,
+    HK_FLAGS        = 5,
+    HK_ERROR        = 6,
+    HK_CRC_ERR_CNT  = 7,
+    HK_MALFORMED_CNT= 8,
     HK_TIMESTAMP_MS = 9
   };
 
@@ -63,7 +63,7 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
           raw(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::RAW_REPLY), this) {}
   };
 
-  // HK dataset (producer side: variables are VAR_WRITE to allow commit() without read()).
+  // HK dataset
   struct RwHkSet : public LocalDataSet {
     LocalPoolVariable<int16_t>  speedRpm;
     LocalPoolVariable<int16_t>  torque_mNm;
@@ -78,15 +78,14 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
 
     explicit RwHkSet(HasLocalDataPoolIF* owner)
         : LocalDataSet(owner, DATASET_ID_HK, HK_VAR_COUNT),
-          // Mark all variables as write-only so we can commit without a prior read.
-          speedRpm     (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM),     this, pool_rwm_t::VAR_WRITE),
-          torque_mNm   (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm),    this, pool_rwm_t::VAR_WRITE),
-          running      (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_RUNNING),       this, pool_rwm_t::VAR_WRITE),
-          flags        (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_FLAGS),         this, pool_rwm_t::VAR_WRITE),
-          error        (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_ERROR),         this, pool_rwm_t::VAR_WRITE),
-          crcErrCnt    (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT),   this, pool_rwm_t::VAR_WRITE),
-          malformedCnt (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_MALFORMED_CNT), this, pool_rwm_t::VAR_WRITE),
-          timestampMs  (owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS),  this, pool_rwm_t::VAR_WRITE) {}
+          speedRpm(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM), this),
+          torque_mNm(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm), this),
+          running(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_RUNNING), this),
+          flags(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_FLAGS), this),
+          error(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_ERROR), this),
+          crcErrCnt(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT), this),
+          malformedCnt(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_MALFORMED_CNT), this),
+          timestampMs(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS), this) {}
   };
 
   // Transition delays
@@ -99,9 +98,6 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   void doStartUp() override;
   void doShutDown() override;
   void modeChanged() override;
-
-  // Enable periodic HK push via PUS Service 3
-  ReturnValue_t initializeAfterTaskCreation() override;
 
   ReturnValue_t buildNormalDeviceCommand(DeviceCommandId_t* id) override;
   ReturnValue_t buildTransitionDeviceCommand(DeviceCommandId_t* id) override;
@@ -116,6 +112,12 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
                                         LocalDataPoolManager& poolManager) override;
   void fillCommandAndReplyMap() override;
 
+  // Subscribe periodic HK after task creation
+  ReturnValue_t initializeAfterTaskCreation() override;
+
+  // Map SID -> dataset for HK service
+  LocalPoolDataSetBase* getDataSetHandle(sid_t sid) override;
+
   ReturnValue_t executeAction(ActionId_t actionId, MessageQueueId_t commandedBy,
                               const uint8_t* data, size_t size) override;
 
@@ -123,9 +125,6 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
                              ParameterWrapper* parameterWrapper,
                              const ParameterWrapper* newValues,
                              uint16_t startAtIndex) override;
-
-  // Map SID -> dataset for HK manager (required for periodic HK push)
-  LocalPoolDataSetBase* getDataSetHandle(sid_t sid) override;
 
  private:
   // RX helpers

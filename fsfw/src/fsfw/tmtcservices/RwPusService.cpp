@@ -1,16 +1,16 @@
-// RwPusService.cpp
+// fsfw/tmtcservices/RwPusService.cpp
 #include "RwPusService.h"
 
 #include <cstring>
 #include <iomanip>
 
-// Use canonical path so it builds from the tmtcservices target as well
 #include "fsfw/devicehandlers/RwProtocol.h"  // CRC-16, IDs, STATUS_LEN
-
+#include "example_common/mission/acs/AcsController.h"
 #include "commonObjects.h"
 #include "fsfw/action/ActionMessage.h"
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"
 #include "fsfw/devicehandlers/DeviceHandlerMessage.h"
+#include "fsfw/ipc/MessageQueueIF.h"
 #include "fsfw/ipc/MessageQueueSenderIF.h"
 #include "fsfw/modes/ModeMessage.h"
 #include "fsfw/objectmanager/ObjectManager.h"
@@ -18,12 +18,39 @@
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
 #include "fsfw/storagemanager/StorageManagerIF.h"
 #include "fsfw/storagemanager/storeAddress.h"
-#include "fsfw/timemanager/Clock.h"  // for timestamp in cache
 
 namespace {
 
 inline uint32_t be32(const uint8_t* p) {
   return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+}
+
+// Find a STATUS frame with CRC-16/CCITT (RwProtocol::STATUS_LEN bytes).
+// Layout: [AB, 10, spdH, spdL, torH, torL, running, crcH, crcL]
+int findStatusFrameCrc16(const uint8_t* buf, size_t len) {
+  if (len < RwProtocol::STATUS_LEN) return -1;
+  for (size_t i = 0; i + (RwProtocol::STATUS_LEN - 1) < len; ++i) {
+    if (buf[i] == RwProtocol::START_REPLY &&
+        buf[i + 1] == static_cast<uint8_t>(RwProtocol::RespId::STATUS)) {
+      if (RwProtocol::verifyCrc16(buf + i, RwProtocol::STATUS_LEN)) {
+        return static_cast<int>(i);
+      }
+    }
+  }
+  return -1;
+}
+
+static inline void be_store_u32(uint8_t* p, uint32_t v) {
+  p[0] = static_cast<uint8_t>((v >> 24) & 0xFF);
+  p[1] = static_cast<uint8_t>((v >> 16) & 0xFF);
+  p[2] = static_cast<uint8_t>((v >> 8) & 0xFF);
+  p[3] = static_cast<uint8_t>( v       & 0xFF);
+}
+static inline void be_store_f32(uint8_t* p, float f) {
+  static_assert(sizeof(float) == 4, "float must be 4 bytes");
+  uint32_t u;
+  std::memcpy(&u, &f, 4);
+  be_store_u32(p, u);
 }
 
 #if RW_PUS_VERBOSE
@@ -47,45 +74,14 @@ inline const char* cmdName(Command_t c) {
     return "DATA_REPLY/DH_DIRECT_DATA";
   }
   switch (c) {
-    case ActionMessage::STEP_SUCCESS:
-      return "STEP_SUCCESS";
-    case ActionMessage::STEP_FAILED:
-      return "STEP_FAILED";
-    case ActionMessage::COMPLETION_SUCCESS:
-      return "COMPLETION_SUCCESS";
-    case ActionMessage::COMPLETION_FAILED:
-      return "COMPLETION_FAILED";
-    case DeviceHandlerMessage::REPLY_RAW_REPLY:
-      return "DH_RAW_REPLY";
-    default:
-      return "UNKNOWN";
+    case ActionMessage::STEP_SUCCESS: return "STEP_SUCCESS";
+    case ActionMessage::STEP_FAILED: return "STEP_FAILED";
+    case ActionMessage::COMPLETION_SUCCESS: return "COMPLETION_SUCCESS";
+    case ActionMessage::COMPLETION_FAILED: return "COMPLETION_FAILED";
+    case DeviceHandlerMessage::REPLY_RAW_REPLY: return "DH_RAW_REPLY";
+    default: return "UNKNOWN";
   }
 }
-
-/** Scan window to (a) find a valid STATUS frame and (b) classify issues.
- *  - Returns index of a valid frame or -1 if none found.
- *  - Sets sawHdr to true if at least one 0xAB 0x10 header was seen.
- *  - Sets sawBadCrc to true if a header was seen with CRC mismatch.
- */
-int findStatusFrameCrc16Ex(const uint8_t* buf, size_t len, bool& sawHdr, bool& sawBadCrc) {
-  sawHdr = false;
-  sawBadCrc = false;
-  if (len < RwProtocol::STATUS_LEN) return -1;
-  int found = -1;
-  for (size_t i = 0; i + (RwProtocol::STATUS_LEN - 1) < len; ++i) {
-    if (buf[i] == RwProtocol::START_REPLY &&
-        buf[i + 1] == static_cast<uint8_t>(RwProtocol::RespId::STATUS)) {
-      sawHdr = true;
-      if (RwProtocol::verifyCrc16(buf + i, RwProtocol::STATUS_LEN)) {
-        found = static_cast<int>(i);
-      } else {
-        sawBadCrc = true;
-      }
-    }
-  }
-  return found;
-}
-
 }  // namespace
 
 // Minimal per-command state
@@ -105,10 +101,6 @@ ReturnValue_t RwPusService::initialize() {
   tcStore  = ObjectManager::instance()->get<StorageManagerIF>(objects::TC_STORE);
 
 #if RW_PUS_VERBOSE
-  if (ipcStore == nullptr) {
-    sif::warning << "RwPusService: IPC_STORE not available!" << std::endl;
-    return returnvalue::FAILED;
-  }
   sif::warning << "RwPusService: init ok. myQ=0x" << std::hex << this->getCommandQueue()
                << " ipc=" << ipcStore << " tm=" << tmStore << " tc=" << tcStore << std::dec
                << std::endl;
@@ -122,47 +114,33 @@ ReturnValue_t RwPusService::isValidSubservice(uint8_t subservice) {
     case Subservice::SET_SPEED:
     case Subservice::STOP:
     case Subservice::STATUS:
+    case Subservice::SET_TORQUE:    // NEW
     case Subservice::SET_MODE:
+    case Subservice::ACS_SET_ENABLE: // NEW
       return returnvalue::OK;
-    // TM subservices are not accepted as TCs
-    case Subservice::TM_STATUS:
-    case Subservice::TM_STATUS_TYPED:
     default:
       return AcceptsTelecommandsIF::INVALID_SUBSERVICE;
   }
 }
 
-void RwPusService::rememberMapping(object_id_t obj, MessageQueueId_t q) {
-  if (obj == objects::NO_OBJECT || q == MessageQueueIF::NO_QUEUE) return;
-  objToQid_[obj] = q;
-  qidToObj_[q]   = obj;
-}
-
-MessageQueueId_t RwPusService::getQidFor(object_id_t obj) const {
-  auto it = objToQid_.find(obj);
-  if (it != objToQid_.end()) {
-    return it->second;
-  }
-  // Optional lazy resolution via ObjectManager
-  auto* dh = ObjectManager::instance()->get<DeviceHandlerIF>(obj);
-  if (dh != nullptr) {
-    const MessageQueueId_t q = dh->getCommandQueue();
-    const_cast<RwPusService*>(this)->rememberMapping(obj, q);
-    return q;
-  }
-  return MessageQueueIF::NO_QUEUE;
-}
-
-ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t, const uint8_t* tcData, size_t tcLen,
-                                                     MessageQueueId_t* id, object_id_t* objectId) {
+ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t subservice, const uint8_t* tcData,
+                                                     size_t tcLen, MessageQueueId_t* id,
+                                                     object_id_t* objectId) {
   if (tcLen < 4) return CommandingServiceBase::INVALID_TC;
 
+  // First 4 bytes in AppData are always a target OID (RW handler or ACS controller)
   *objectId = static_cast<object_id_t>(be32(tcData));
-#if RW_PUS_VERBOSE
-  sif::warning << "PUS220 route: objId=0x" << std::hex << *objectId << std::dec << std::endl;
-#endif
 
+  // Default: resolve as DeviceHandler (RW)
   auto* dh = ObjectManager::instance()->get<DeviceHandlerIF>(*objectId);
+
+  if (static_cast<Subservice>(subservice) == Subservice::ACS_SET_ENABLE) {
+    // Local operation in service: no device queue involved
+    *id = MessageQueueIF::NO_QUEUE;
+    lastTargetObjectId_ = *objectId;
+    return returnvalue::OK;
+  }
+
   if (dh == nullptr) {
 #if RW_PUS_VERBOSE
     sif::warning << "PUS220 route: INVALID_OBJECT for objId=0x" << std::hex << *objectId << std::dec
@@ -173,19 +151,20 @@ ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t, const uint8_t* tcD
 
   *id = dh->getCommandQueue();
 
-  // Learn/update both directions for multi-device operation
-  rememberMapping(*objectId, *id);
+  // Map sender queue -> object id for robust unrequested reply routing
+  qidToObj_[*id] = *objectId;
 
 #if RW_PUS_VERBOSE
   sif::warning << "PUS220 route: commandQueueId=0x" << std::hex << *id << std::dec << std::endl;
 #endif
 
+  lastTargetObjectId_ = *objectId;  // fallback
   return returnvalue::OK;
 }
 
 ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subservice,
                                            const uint8_t* tcData, size_t tcLen, uint32_t* state,
-                                           object_id_t) {
+                                           object_id_t objectId) {
 #if RW_PUS_VERBOSE
   sif::info << "RwPusService: TC subservice=" << int(subservice) << " len=" << tcLen << std::endl;
 #endif
@@ -201,18 +180,24 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
     case Subservice::SET_SPEED: {
       if (appLen < 2) return CommandingServiceBase::INVALID_TC;
       const int16_t rpm = static_cast<int16_t>((app[0] << 8) | app[1]);
-
       store_address_t sid{};
       uint8_t* p = nullptr;
       auto rv = ipcStore->getFreeElement(&sid, sizeof(rpm), &p);
       if (rv != returnvalue::OK) return rv;
       std::memcpy(p, &rpm, sizeof(rpm));
-
-#if RW_PUS_VERBOSE
-      sif::warning << "PUS220 prepare SET_SPEED: rpm=" << rpm << " store=0x" << std::hex << sid.raw
-                   << std::dec << std::endl;
-#endif
       ActionMessage::setCommand(message, 0x01 /* CMD_SET_SPEED */, sid);
+      return returnvalue::OK;
+    }
+
+    case Subservice::SET_TORQUE: {  // NEW
+      if (appLen < 2) return CommandingServiceBase::INVALID_TC;
+      const int16_t tq = static_cast<int16_t>((app[0] << 8) | app[1]);
+      store_address_t sid{};
+      uint8_t* p = nullptr;
+      auto rv = ipcStore->getFreeElement(&sid, sizeof(tq), &p);
+      if (rv != returnvalue::OK) return rv;
+      std::memcpy(p, &tq, sizeof(tq));
+      ActionMessage::setCommand(message, 0x04 /* CMD_SET_TORQUE */, sid);
       return returnvalue::OK;
     }
 
@@ -222,29 +207,18 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       auto rv = ipcStore->getFreeElement(&sid, 1, &p);
       if (rv != returnvalue::OK) return rv;
       *p = 0x00;
-
-#if RW_PUS_VERBOSE
-      sif::warning << "PUS220 prepare STOP (with dummy store) sid=0x" << std::hex << sid.raw
-                   << std::dec << std::endl;
-#endif
       ActionMessage::setCommand(message, 0x02 /* CMD_STOP */, sid);
       return returnvalue::OK;
     }
 
     case Subservice::STATUS: {
-      // We expect a DATA_REPLY later -> go into WAIT_DATA state
+      // Expect a DATA_REPLY later -> WAIT_DATA
       if (state) *state = static_cast<uint32_t>(CmdState::WAIT_DATA);
-
       store_address_t sid{};
       uint8_t* p = nullptr;
       auto rv = ipcStore->getFreeElement(&sid, 1, &p);
       if (rv != returnvalue::OK) return rv;
       *p = 0x00;
-
-#if RW_PUS_VERBOSE
-      sif::warning << "PUS220 prepare STATUS (with dummy store) sid=0x" << std::hex << sid.raw
-                   << std::dec << std::endl;
-#endif
       ActionMessage::setCommand(message, 0x03 /* CMD_STATUS */, sid);
       return returnvalue::OK;
     }
@@ -253,21 +227,31 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       if (appLen < 2) return CommandingServiceBase::INVALID_TC;
       const uint8_t mode = app[0];
       const uint8_t submode = app[1];
-#if RW_PUS_VERBOSE
-      sif::info << "RwPusService: SET_MODE req -> mode=" << int(mode) << ", sub=" << int(submode)
-                << std::endl;
-#endif
       ModeMessage::setModeMessage(message, ModeMessage::CMD_MODE_COMMAND, mode, submode);
       return returnvalue::OK;
     }
 
-    case Subservice::TM_STATUS:
-    case Subservice::TM_STATUS_TYPED: {
-      return CommandingServiceBase::INVALID_TC;
+    case Subservice::ACS_SET_ENABLE: {  // local handling (no message sent)
+      if (appLen < 1) return CommandingServiceBase::INVALID_TC;
+      const bool enable = app[0] != 0;
+      auto* acs = ObjectManager::instance()->get<AcsController>(objectId);
+      if (acs == nullptr) {
+#if RW_PUS_VERBOSE
+        sif::warning << "RwPusService: ACS OID 0x" << std::hex << objectId << std::dec
+                     << " not found" << std::endl;
+#endif
+        return CommandingServiceBase::INVALID_OBJECT;
+      }
+      acs->setEnabled(enable);
+      // Immediately emit typed ACS HK for operator feedback
+      (void)emitAcsTypedHk(objectId);
+      // No queue message -> treat as complete
+      return CommandingServiceBase::EXECUTION_COMPLETE;
     }
-  }
 
-  return CommandingServiceBase::INVALID_TC;
+    default:
+      return CommandingServiceBase::INVALID_TC;
+  }
 }
 
 ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object_id_t objectId) {
@@ -309,116 +293,37 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
   }
 
   dumpHexWarn("[PUS220 generic] head", buf, (len < 32 ? len : size_t(32)));
-
-  bool sawHdr = false;
-  bool sawBadCrc = false;
-  const int idx = findStatusFrameCrc16Ex(buf, len, sawHdr, sawBadCrc);
-
-  // Update per-object quality counters based on window analysis
-  RwStats& stc = stats_[objectId];
-  if (sawBadCrc) {
-    ++stc.crcErrCnt;
-  }
-  if (!sawHdr) {
-    // No recognizable header in the window -> treat as malformed window
-    if (len > 0) {
-      ++stc.malformedCnt;
-    }
-  }
+  const int idx = findStatusFrameCrc16(buf, len);
 
   ReturnValue_t rv = returnvalue::OK;
   if (idx >= 0) {
     RwProtocol::Status st{};
     const bool ok = RwProtocol::parseStatus(buf + idx, RwProtocol::STATUS_LEN, st);
     if (!ok) {
-      ++stc.malformedCnt;
       rv = returnvalue::FAILED;
     } else {
-      // Update per-object status cache with local uptime timestamp
-      uint32_t ms = 0;
-      (void)Clock::getUptime(&ms);
-      lastStatus_[objectId] = RwStatusCache{
-          .speedRpm = st.speedRpm, .torqueMnM = st.torqueMnM, .running = st.running, .timestampMs = ms};
-      ++stc.sampleCnt;
+      // AppData: [object_id(4) | speed(2) | torque(2) | running(1)] => 9 bytes
+      uint8_t app[9];
+      app[0] = static_cast<uint8_t>((objectId >> 24) & 0xFF);
+      app[1] = static_cast<uint8_t>((objectId >> 16) & 0xFF);
+      app[2] = static_cast<uint8_t>((objectId >> 8) & 0xFF);
+      app[3] = static_cast<uint8_t>(objectId & 0xFF);
+      app[4] = static_cast<uint8_t>((st.speedRpm >> 8) & 0xFF);
+      app[5] = static_cast<uint8_t>( st.speedRpm       & 0xFF);
+      app[6] = static_cast<uint8_t>((st.torqueMnM >> 8) & 0xFF);
+      app[7] = static_cast<uint8_t>( st.torqueMnM       & 0xFF);
+      app[8] = st.running;
 
-#if RW_PUS_ENABLE_LEGACY_130
-      // -------------------------
-      // TM[220,130] LEGACY (compact 9B payload)
-      // -------------------------
-      {
-        uint8_t app130[9];
-        app130[0] = static_cast<uint8_t>((objectId >> 24) & 0xFF);
-        app130[1] = static_cast<uint8_t>((objectId >> 16) & 0xFF);
-        app130[2] = static_cast<uint8_t>((objectId >> 8) & 0xFF);
-        app130[3] = static_cast<uint8_t>(objectId & 0xFF);
-        app130[4] = static_cast<uint8_t>((st.speedRpm >> 8) & 0xFF);
-        app130[5] = static_cast<uint8_t>( st.speedRpm       & 0xFF);
-        app130[6] = static_cast<uint8_t>((st.torqueMnM >> 8) & 0xFF);
-        app130[7] = static_cast<uint8_t>( st.torqueMnM       & 0xFF);
-        app130[8] = st.running;
-
-        const auto prv =
-            tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_STATUS), app130, sizeof(app130));
-        if (prv == returnvalue::OK) {
-          (void)tmHelper.storeAndSendTmPacket();
-        }
-      }
-#endif  // RW_PUS_ENABLE_LEGACY_130
-
-      // -------------------------
-      // TM[220,131] TYPED v1 (28B payload)
-      // -------------------------
-      {
-        uint8_t app131[28];
-        size_t o = 0;
-        auto wr8  = [&](uint8_t v) { app131[o++] = v; };
-        auto wr16 = [&](uint16_t v) { app131[o++] = static_cast<uint8_t>((v >> 8) & 0xFF);
-                                      app131[o++] = static_cast<uint8_t>( v       & 0xFF); };
-        auto wr32 = [&](uint32_t v) { app131[o++] = static_cast<uint8_t>((v >> 24) & 0xFF);
-                                      app131[o++] = static_cast<uint8_t>((v >> 16) & 0xFF);
-                                      app131[o++] = static_cast<uint8_t>((v >> 8)  & 0xFF);
-                                      app131[o++] = static_cast<uint8_t>( v        & 0xFF); };
-
-        // version
-        wr8(1);
-        // objectId
-        wr32(static_cast<uint32_t>(objectId));
-        // speed/torque/running
-        wr16(static_cast<uint16_t>(static_cast<uint16_t>(st.speedRpm)));
-        wr16(static_cast<uint16_t>(static_cast<uint16_t>(st.torqueMnM)));
-        wr8(st.running);
-        // flags/error (not provided by service; keep zero for now)
-        wr16(0);
-        wr16(0);
-        // quality counters
-        wr32(stc.crcErrCnt);
-        wr32(stc.malformedCnt);
-        // timestamp (uptime ms) and sampleCnt
-        wr32(lastStatus_[objectId].timestampMs);
-        wr16(stc.sampleCnt);
-
-        const auto prv =
-            tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_STATUS_TYPED), app131, sizeof(app131));
-        if (prv == returnvalue::OK) {
-          (void)tmHelper.storeAndSendTmPacket();
-        }
-      }
+      const auto prv =
+          tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_STATUS), app, sizeof(app));
+      rv = (prv == returnvalue::OK) ? tmHelper.storeAndSendTmPacket() : prv;
     }
   } else {
-#if RW_PUS_VERBOSE
-    sif::warning << "[PUS220 generic] no AB 10 .. .. .. .. .. CRC16-valid frame in payload" << std::endl;
-#endif
     rv = returnvalue::FAILED;
   }
 
   if (usedStore != nullptr) {
-    auto delRv = usedStore->deleteData(sid);
-#if RW_PUS_VERBOSE
-    if (delRv != returnvalue::OK) {
-      sif::warning << "[PUS220 generic] deleteData sid=0x" << std::hex << sid.raw << std::dec
-                   << " failed rv=" << delRv << std::endl;
-    }
-#endif
+    (void)usedStore->deleteData(sid);
   }
 
   return rv;
@@ -427,25 +332,15 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
 ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, uint32_t* state,
                                         CommandMessage*, object_id_t objectId, bool* isStep) {
 #if RW_PUS_VERBOSE
-  const store_address_t sidActionDbg = ActionMessage::getStoreId(reply);
-  const store_address_t sidDhDbg = DeviceHandlerMessage::getStoreAddress(reply);
-  sif::warning << "[PUS220] inspect: sidAction=0x" << std::hex << sidActionDbg.raw << " sidDh=0x"
-               << sidDhDbg.raw << std::dec << std::endl;
+  sif::info << "RwPusService::handleReply cmd=0x" << std::hex << int(reply->getCommand())
+            << " (" << cmdName(reply->getCommand()) << ")" << std::dec << std::endl;
 #endif
 
   const auto cmd = reply->getCommand();
-
   CmdState st = CmdState::NONE;
   if (state != nullptr) st = static_cast<CmdState>(*state);
 
-#if RW_PUS_VERBOSE
-  sif::info << "RwPusService::handleReply cmd=0x" << std::hex << int(cmd) << " (" << cmdName(cmd)
-            << ")" << std::dec << std::endl;
-  sif::warning << "[PUS220] current state=" << (st == CmdState::WAIT_DATA ? "WAIT_DATA" : "NONE")
-               << std::endl;
-#endif
-
-  // 1) Data-like replies: resolve store id and parse
+  // Data-like replies: resolve store id and parse
   const bool isDataLike = (cmd == ActionMessage::DATA_REPLY) ||
                           (cmd == DeviceHandlerMessage::REPLY_DIRECT_COMMAND_DATA) ||
                           (cmd == DeviceHandlerMessage::REPLY_RAW_REPLY);
@@ -466,7 +361,6 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
 
     const auto rv = handleDataReplyAndEmitTm(sid, objectId);
     if (rv == returnvalue::OK) {
-      // Finish the transaction to avoid lingering WAIT_DATA
       if (state) *state = static_cast<uint32_t>(CmdState::NONE);
       return CommandingServiceBase::EXECUTION_COMPLETE;
     }
@@ -477,10 +371,9 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
     return returnvalue::OK;
   }
 
-  // 2) Control-only replies
+  // Control-only replies
   switch (cmd) {
     case ActionMessage::STEP_SUCCESS: {
-      // Treat one-step commands (SET/STOP) as done when not in WAIT_DATA
       if (st != CmdState::WAIT_DATA) {
         return CommandingServiceBase::EXECUTION_COMPLETE;
       }
@@ -488,7 +381,6 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
       return returnvalue::OK;
     }
     case ActionMessage::COMPLETION_SUCCESS: {
-      // One-shot commands completed
       if (st == CmdState::WAIT_DATA) return returnvalue::OK;
       return CommandingServiceBase::EXECUTION_COMPLETE;
     }
@@ -509,14 +401,6 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
   }
 }
 
-object_id_t RwPusService::resolveObjFromSender(MessageQueueId_t sender) const {
-  auto it = qidToObj_.find(sender);
-  if (it != qidToObj_.end()) {
-    return it->second;
-  }
-  return objects::NO_OBJECT;
-}
-
 void RwPusService::handleUnrequestedReply(CommandMessage* reply) {
   const auto cmd = reply->getCommand();
 #if RW_PUS_VERBOSE
@@ -532,13 +416,46 @@ void RwPusService::handleUnrequestedReply(CommandMessage* reply) {
     const store_address_t sid =
         (sidAction.raw != StorageManagerIF::INVALID_ADDRESS) ? sidAction : sidDh;
 
-    // Resolve which RW this unrequested reply belongs to, based on sender queue
-    const MessageQueueId_t senderQ = reply->getSender();
-    const object_id_t obj = resolveObjFromSender(senderQ);
-
-    if (obj != objects::NO_OBJECT) {
-      (void)handleDataReplyAndEmitTm(sid, obj);
+    // Map sender queue -> object id (robust when multiple RWs exist)
+    object_id_t obj = lastTargetObjectId_;
+    const MessageQueueId_t sender = reply->getSender();
+    auto it = qidToObj_.find(sender);
+    if (it != qidToObj_.end()) {
+      obj = it->second;
     }
+
+#if RW_PUS_VERBOSE
+    sif::warning << "[PUS220] UNREQUESTED: treating message as DATA (sid=0x" << std::hex << sid.raw
+                 << std::dec << "), object=0x" << std::hex << obj << std::dec
+                 << " senderQ=0x" << std::hex << sender << std::dec << std::endl;
+#endif
+    (void)handleDataReplyAndEmitTm(sid, obj);
   }
-  // Signature is void -> nothing to return
+}
+
+ReturnValue_t RwPusService::emitAcsTypedHk(object_id_t acsObjectId) {
+  auto* acs = ObjectManager::instance()->get<AcsController>(acsObjectId);
+  if (acs == nullptr) {
+    return CommandingServiceBase::INVALID_OBJECT;
+  }
+
+  AcsDiagSnapshot snap{};
+  acs->fillDiagSnapshot(snap);
+
+  // AppData layout (big-endian):
+  // [OID(4) | ver(1) | enabled(1) | kd[3]*f32 | tauDes[3]*f32 | tauWheel[4]*f32 | dt_ms(u32)]
+  uint8_t app[50] = {};
+  size_t off = 0;
+  be_store_u32(&app[off], static_cast<uint32_t>(acsObjectId)); off += 4;
+  app[off++] = snap.version;
+  app[off++] = snap.enabled ? 1 : 0;
+  for (int i = 0; i < 3; ++i) { be_store_f32(&app[off], snap.kd[i]); off += 4; }
+  for (int i = 0; i < 3; ++i) { be_store_f32(&app[off], snap.tauDes[i]); off += 4; }
+  for (int i = 0; i < 4; ++i) { be_store_f32(&app[off], snap.tauWheel[i]); off += 4; }
+  be_store_u32(&app[off], snap.dt_ms); off += 4;
+
+  const auto prv = tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_ACS_HK_TYPED),
+                                            app, off);
+  if (prv != returnvalue::OK) return prv;
+  return tmHelper.storeAndSendTmPacket();
 }

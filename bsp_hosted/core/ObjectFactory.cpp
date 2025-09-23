@@ -109,6 +109,8 @@ void ObjectFactory::produce(void* args) {
   auto* rwHandler =
       new ReactionWheelsHandler(objects::RW_HANDLER, objects::RW_SERIAL_COM_IF, rwCookie);
 
+  (void)rwHandler;
+
   // ---------------- RwPusService (PUS-220) --------------------
   // If you already have a common TM/TC services task, simply addComponent(rwPus) there.
   constexpr uint16_t RW_PUS_APID = 0x00EF;  // pick an APID suitable for your setup
@@ -128,13 +130,18 @@ void ObjectFactory::produce(void* args) {
   auto* acs = new AcsController(objects::RW_ACS_CTRL,
                                 std::array<object_id_t, 4>{objects::RW_HANDLER, 0, 0, 0});
 
+  (void)acs;
+
   // ACS task
   auto* acsTask = TaskFactory::instance()->createPeriodicTask(
       "RW_ACS", 55, PeriodicTaskIF::MINIMUM_STACK_SIZE, 0.05, nullptr);
   auto res = acsTask->addComponent(objects::RW_ACS_CTRL);
   if (res != returnvalue::OK) {
-    task::printInitError("RW_ACS", objects::RW_ACS_CTRL);
+    // Fallback logging if TaskCreation helper is not available.
+    sif::error << "RW_ACS: addComponent failed for object 0x" << std::hex << objects::RW_ACS_CTRL
+               << std::dec << std::endl;
   }
+
   acsTask->startTask();
 
   // ----------------- AcsController -----------------------

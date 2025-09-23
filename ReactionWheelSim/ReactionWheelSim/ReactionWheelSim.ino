@@ -1,76 +1,94 @@
 /**
   ******************************************************************************
   * @file           : ReactionWheelSim.ino
-  * @brief          : Reaction Wheel Simulator with Physical Dynamics and Noise
+  * @brief          : Reaction Wheel Simulator (CRC-16/CCITT, 6B CMD / 9B STATUS)
   ******************************************************************************
-  * @details
+  * Wire protocol (big-endian):
+  *   CMD (Host->Sim):    [0]=0xAA, [1]=CMD_ID, [2]=valH, [3]=valL, [4]=crcH, [5]=crcL
+  *   STATUS (Sim->Host): [0]=0xAB, [1]=0x10,
+  *                       [2..3]=speed_rpm(i16), [4..5]=torque_mNm(i16), [6]=running(u8),
+  *                       [7..8]=CRC16 over bytes 0..6
   *
-  * This program simulates the physical behavior of a reaction wheel on an 
-  * embedded microcontroller (Arduino Nano 33 BLE Sense Rev2), primarily for 
-  * hardware-in-the-loop (HIL) testing with the FSFW (Flight Software Framework).
-  *
-  * Simulation features:
-  *   - Realistic reaction wheel dynamics:
-  *       * Wheel inertia
-  *       * Acceleration limits
-  *       * Commanded speed tracking
-  *   - Additive stochastic noise:
-  *       * Simulated using band-limited white noise (BLWN)
-  *       * Models torque ripple or actuator noise
-  *   - Serial command interface (binary, FSFW-compatible):
-  *       * SET speed [RPM]
-  *       * STOP wheel
-  *       * STATUS request (returns current speed, torque, and running flag)
-  *   - CRC8 packet integrity verification
-  *   - LED indicators:
-  *       * LED_BUILTIN blinks at wheel frequency
-  *       * LED_PWR (P1.09) indicates protocol or CRC errors
-  *
+  * CRC: CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, xorout 0x0000), big-endian append
   ******************************************************************************
-  * @attention
-  *
-  * Created in 2025 for academic and experimental use.
-  * Provided as-is, without warranty of any kind.
-  *
-  ******************************************************************************
-  */
+*/
 
-// Commands declaration
-const byte START_BYTE_CMD   = 0xAA;
-const byte START_BYTE_REPLY = 0xAB;
+#include <Arduino.h>
 
-const byte CMD_SET_SPEED    = 0x01;
-const byte CMD_STOP         = 0x02;
-const byte CMD_STATUS       = 0x03;
+// --- Protocol constants ---
+const uint8_t START_BYTE_CMD   = 0xAA;
+const uint8_t START_BYTE_REPLY = 0xAB;
 
-const byte RESP_STATUS      = 0x10;
+const uint8_t CMD_SET_SPEED  = 0x01;
+const uint8_t CMD_STOP       = 0x02;
+const uint8_t CMD_STATUS     = 0x03;
+const uint8_t CMD_SET_TORQUE = 0x04; 
 
-const int LED_PIN = LED_BUILTIN;
+const uint8_t RESP_STATUS = 0x10;
 
-// Physical parameters (constant)
-const float J_rw = 0.001f;         // [kg m^2] MoI of reaction wheel
-const float J_sc = 0.5f;           // [kg m^2] MoI of S/C
-const float alpha_max = 5.0f;      // [rad/s^2] maximum rw acceleration
-const float dt = 0.01f;            // [s] simulation time step (default: 10ms)
+const int LED_PIN = LED_BUILTIN;   // Wheel "blink" indicator
+#ifndef LED_PWR
+#define LED_PWR 25                 // Fallback: pick a pin if LED_PWR not defined
+#endif
 
-// Runtime parameters initialisation
-float omega_rw = 0.0f;             // [rad/s] current angular rate
-float omega_rw_target = 0.0f;      // [rad/s] target velocity
-float alpha_rw = 0.0f;             // [rad/s^2] current acceleration
-bool errorFlag = false;            // Error flag
+// --- Physical / sim parameters ---
+const float J_rw       = 0.001f;   // [kg m^2] RW inertia
+const float alpha_max  = 5.0f;     // [rad/s^2] absolute accel limit (models motor limit)
+const float dt         = 0.01f;    // [s] simulation step (10 ms)
+const int16_t RPM_MAX  = 6000;     // [RPM] safety clamp for sim
+const int16_t TQ_MAX_mNm = 1000;   // [mNm] torque command clamp (±1.0 N·m)
+
+// --- Runtime state ---
+float   omega_rw        = 0.0f;  // [rad/s] current wheel speed
+float   omega_rw_target = 0.0f;  // [rad/s] speed target (speed mode)
+float   alpha_rw        = 0.0f;  // [rad/s^2] resulting acceleration
+bool    torqueMode      = false; // true if last command was CMD_SET_TORQUE
+float   tau_cmd_Nm      = 0.0f;  // [N·m] commanded torque in torque-mode
+
+bool  errorFlag       = false;   // Protocol/CRC error indicator
 unsigned long lastUpdate = 0;
 
-// Setup with initialisation
+// -------- CRC-16/CCITT-FALSE (bitwise) --------
+uint16_t crc16_ccitt(const uint8_t* data, size_t len) {
+  uint16_t crc = 0xFFFF;
+  for (size_t i = 0; i < len; ++i) {
+    crc ^= static_cast<uint16_t>(data[i]) << 8;
+    for (int b = 0; b < 8; ++b) {
+      if (crc & 0x8000) {
+        crc = static_cast<uint16_t>((crc << 1) ^ 0x1021);
+      } else {
+        crc = static_cast<uint16_t>(crc << 1);
+      }
+    }
+  }
+  return crc;
+}
+
+// Helper: read exactly 'n' bytes (blocking up to a timeout)
+bool readExact(uint8_t* dst, size_t n, uint32_t timeoutMs = 50) {
+  const uint32_t deadline = millis() + timeoutMs;
+  size_t off = 0;
+  while (off < n) {
+    if (Serial.available()) {
+      off += Serial.readBytes(dst + off, n - off);
+    } else if (millis() > deadline) {
+      return false;
+    }
+    delayMicroseconds(200);
+  }
+  return true;
+}
+
 void setup() {
   Serial.begin(9600);
-  while (!Serial);
+  while (!Serial) { /* wait for USB CDC */ }
   pinMode(LED_PIN, OUTPUT);
   pinMode(LED_PWR, OUTPUT);
   digitalWrite(LED_PIN, LOW);
   digitalWrite(LED_PWR, LOW);
+  randomSeed(analogRead(0));
 }
 
-// Loop with function calls
 void loop() {
   handleSerialPackets();
   updateWheelDynamics();
@@ -78,72 +96,121 @@ void loop() {
   updateErrorLED();
 }
 
-// ------------------ Function declarations ---------------------
+// ------------------ Protocol handling ---------------------
 
-// handleSerialPackets
 void handleSerialPackets() {
-  if (Serial.available() >= 5) {
-    byte packet[5];
-    Serial.readBytes(packet, 5);
+  // Each command frame is 6 bytes with CRC-16
+  while (Serial.available() >= 6) {
+    uint8_t packet[6];
+    if (!readExact(packet, sizeof(packet), 10)) {
+      break;
+    }
 
+    // Basic sanity checks
     if (packet[0] != START_BYTE_CMD) {
       errorFlag = true;
-      return;
-    }
-    if (crc8(packet, 4) != packet[4]) {
-      errorFlag = true;
-      return;
+      continue;
     }
 
-    errorFlag = false; // package correct, reset error flag
-    byte cmd = packet[1];
-    int16_t value = (int16_t)((int16_t)packet[2] << 8 | packet[3]);
+    // Verify CRC-16 over first 4 bytes; compare to trailing 2 bytes (big-endian)
+    const uint16_t rxCrc = (static_cast<uint16_t>(packet[4]) << 8) | packet[5];
+    const uint16_t caCrc = crc16_ccitt(packet, 4);
+    if (rxCrc != caCrc) {
+      errorFlag = true;
+      continue;
+    }
+
+    errorFlag = false; // valid frame
+    const uint8_t cmd = packet[1];
+    const int16_t value = static_cast<int16_t>((packet[2] << 8) | packet[3]); // big-endian
 
     switch (cmd) {
-      case CMD_SET_SPEED:
-        omega_rw_target = (float)value * 2.0f * PI / 60.0f; // [U/min] conversion to [rad/s]
+      case CMD_SET_SPEED: {
+        // RPM -> rad/s, exit torque mode
+        int16_t rpm_cmd = value;
+        if (rpm_cmd > RPM_MAX) rpm_cmd = RPM_MAX;
+        if (rpm_cmd < -RPM_MAX) rpm_cmd = -RPM_MAX;
+        omega_rw_target = static_cast<float>(rpm_cmd) * 2.0f * PI / 60.0f;
+        tau_cmd_Nm = 0.0f;
+        torqueMode = false;
         break;
-      case CMD_STOP:
+      }
+      case CMD_SET_TORQUE: {
+        int16_t tq_mNm = value;
+        if (tq_mNm >  TQ_MAX_mNm) tq_mNm =  TQ_MAX_mNm;
+        if (tq_mNm < -TQ_MAX_mNm) tq_mNm = -TQ_MAX_mNm;
+        tau_cmd_Nm = static_cast<float>(tq_mNm) / 1000.0f; // mNm -> N·m
+        torqueMode = true; // switch to torque mode
+        break;
+      }
+      case CMD_STOP: {
         omega_rw_target = 0.0f;
+        tau_cmd_Nm = 0.0f;
+        torqueMode = false;
         break;
-      case CMD_STATUS:
+      }
+      case CMD_STATUS: {
         sendStatusReply();
         break;
-      default:
+      }
+      default: {
         errorFlag = true; // unknown command
         break;
+      }
     }
   }
 }
 
-// updateWheelDynamics
-void updateWheelDynamics() {
-  unsigned long now = millis();
-  if (now - lastUpdate < 10) return;
-  lastUpdate = now;
+// ------------------ Dynamics & visualization ---------------------
 
-  float error = omega_rw_target - omega_rw;
-  float desired_alpha = constrain(error / dt, -alpha_max, alpha_max);
-
-  alpha_rw = desired_alpha;
-  float tau_n = generateBLWN();
-  omega_rw += (alpha_rw + tau_n / J_rw) * dt;
-}
-
-// generateBLWN
+// Band-limited white noise torque for a tad of realism
 float generateBLWN() {
   static float wn = 0.0f;
-  const float noiseGain = 0.002f;     // [Nm] maximum Noise
-  const float alpha = 0.1f;           // 0 < alpha < 1 (band-limitation)
-  float white = ((float)random(-1000, 1000) / 1000.0f); // random number between -1 and 1
-  wn = (1 - alpha) * wn + alpha * white;
+  const float noiseGain = 0.002f; // [N·m] max noise
+  const float alpha = 0.1f;       // 0..1 (band-limitation)
+  const float white = static_cast<float>(random(-1000, 1000)) / 1000.0f;
+  wn = (1.0f - alpha) * wn + alpha * white;
   return wn * noiseGain;
 }
 
-// visualizeSpeed
+void updateWheelDynamics() {
+  const unsigned long now = millis();
+  if (now - lastUpdate < 10) return;
+  lastUpdate = now;
+
+  // Choose acceleration based on current command mode
+  float tau_noise = generateBLWN(); // [N·m]
+  if (torqueMode) {
+    // alpha = tau / J, clamp to alpha_max (models motor limit)
+    float alpha_cmd = (tau_cmd_Nm + tau_noise) / J_rw;
+    if (alpha_cmd >  alpha_max) alpha_cmd =  alpha_max;
+    if (alpha_cmd < -alpha_max) alpha_cmd = -alpha_max;
+    alpha_rw = alpha_cmd;
+  } else {
+    // Speed mode: simple accel limiter towards target (PD-like)
+    const float error = omega_rw_target - omega_rw;
+    float desired_alpha = error / dt; // "in one step"
+    if (desired_alpha >  alpha_max) desired_alpha =  alpha_max;
+    if (desired_alpha < -alpha_max) desired_alpha = -alpha_max;
+    // Noise torque contributes to actual acceleration
+    alpha_rw = desired_alpha + (tau_noise / J_rw);
+  }
+
+  // Integrate speed
+  omega_rw += alpha_rw * dt;
+
+  // Safety speed clamp
+  const float rpm_now = omega_rw * 60.0f / (2.0f * PI);
+  if (rpm_now > RPM_MAX) {
+    omega_rw = RPM_MAX * 2.0f * PI / 60.0f;
+  } else if (rpm_now < -RPM_MAX) {
+    omega_rw = -RPM_MAX * 2.0f * PI / 60.0f;
+  }
+}
+
 void visualizeSpeed() {
-  float freq = abs(omega_rw) / (2 * PI); // Hz
-  float delay_ms = (freq > 0.5f) ? 500.0f / freq : 1000.0f;
+  const float freq = fabs(omega_rw) / (2.0f * PI); // [Hz]
+  const float delay_ms = (freq > 0.5f) ? (500.0f / freq) : 1000.0f;
 
   static unsigned long lastBlink = 0;
   static bool state = false;
@@ -155,43 +222,39 @@ void visualizeSpeed() {
   }
 }
 
-// updateErrorLED
 void updateErrorLED() {
-  if (errorFlag) {
-    digitalWrite(LED_PWR, HIGH); // Error: LED ON
-  } else {
-    digitalWrite(LED_PWR, LOW);  // No Error: LED OFF
-  }
+  digitalWrite(LED_PWR, errorFlag ? HIGH : LOW);
 }
 
-// sendStatusReply
+// ------------------ Status reply (9 bytes, CRC-16) ---------------------
+
 void sendStatusReply() {
-  byte reply[8];
+  uint8_t reply[9];
   reply[0] = START_BYTE_REPLY;
   reply[1] = RESP_STATUS;
-  int16_t speed_rpm = omega_rw * 60.0f / (2 * PI); // [rad/s] conversion to [U/min]
-  int16_t torque_mNm = J_rw * alpha_rw * 1000.0f;   // [Nm] conversion to [mNm]
-  reply[2] = (speed_rpm >> 8) & 0xFF;
-  reply[3] = speed_rpm & 0xFF;
-  reply[4] = (torque_mNm >> 8) & 0xFF;
-  reply[5] = torque_mNm & 0xFF;
-  reply[6] = (omega_rw_target != 0.0f) ? 1 : 0;
-  reply[7] = crc8(reply, 7);
 
-  Serial.write(reply, 8);
-}
+  // Telemetry values
+  int16_t speed_rpm  = static_cast<int16_t>(omega_rw * 60.0f / (2.0f * PI)); // rad/s -> RPM
+  int16_t torque_mNm = static_cast<int16_t>(J_rw * alpha_rw * 1000.0f);      // Nm -> mNm
+  uint8_t running    = 0;
 
-// crc8
-byte crc8(const byte* data, byte len) {
-  byte crc = 0x00;
-  for (byte i = 0; i < len; i++) {
-    crc ^= data[i];
-    for (byte j = 0; j < 8; j++) {
-      if (crc & 0x80)
-        crc = (crc << 1) ^ 0x07;
-      else
-        crc <<= 1;
-    }
+  if (torqueMode) {
+    running = (fabs(tau_cmd_Nm) > 1e-6f) ? 1 : 0;
+  } else {
+    running = (fabs(omega_rw_target) > 1e-6f) ? 1 : 0;
   }
-  return crc;
+
+  // Pack big-endian payload
+  reply[2] = static_cast<uint8_t>((speed_rpm >> 8) & 0xFF);
+  reply[3] = static_cast<uint8_t>( speed_rpm       & 0xFF);
+  reply[4] = static_cast<uint8_t>((torque_mNm >> 8) & 0xFF);
+  reply[5] = static_cast<uint8_t>( torque_mNm       & 0xFF);
+  reply[6] = running;
+
+  // CRC-16 over bytes 0..6, append big-endian
+  const uint16_t crc = crc16_ccitt(reply, 7);
+  reply[7] = static_cast<uint8_t>((crc >> 8) & 0xFF);
+  reply[8] = static_cast<uint8_t>( crc       & 0xFF);
+
+  Serial.write(reply, sizeof(reply));
 }
