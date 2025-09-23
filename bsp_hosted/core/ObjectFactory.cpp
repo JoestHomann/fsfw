@@ -7,26 +7,23 @@
 #include "example/test/FsfwTestTask.h"
 #include "example/utility/TmFunnel.h"
 #include "fsfw/storagemanager/PoolManager.h"
+#include "fsfw/tasks/TaskFactory.h"
 #include "fsfw/tcdistribution/CcsdsDistributor.h"
 #include "fsfw/tmtcservices/CommandingServiceBase.h"
 #include "fsfw_hal/host/HostFilesystem.h"
-#include "fsfw/tasks/TaskFactory.h"
-
-// JH
-//#include "fsfw/src/fsfw/devicehandlers/ReactionWheelsHandler.h"
-#include "fsfw/src/fsfw_hal/linux/serial/SerialComIF.h"
-#include "fsfw/src/fsfw_hal/linux/serial/SerialCookie.h"
-// JH
 
 // --- JH: ReactionWheelsHandler & PUS service ---
+#include "example_common/mission/acs/AcsController.h"
+#include "fsfw/devicehandlers/DeviceHandlerFailureIsolation.h"
+#include "fsfw/devicehandlers/DeviceHandlerIF.h"
+#include "fsfw/ipc/CommandMessage.h"
+#include "fsfw/ipc/QueueFactory.h"
+#include "fsfw/modes/HasModesIF.h"
+#include "fsfw/modes/ModeMessage.h"
 #include "fsfw/src/fsfw/devicehandlers/ReactionWheelsHandler.h"
 #include "fsfw/src/fsfw/tmtcservices/RwPusService.h"
-#include "fsfw/devicehandlers/DeviceHandlerIF.h"  // for DeviceHandlerIF::MODE_RAW
-#include "fsfw/modes/ModeMessage.h"
-#include "fsfw/modes/HasModesIF.h"
-#include "fsfw/ipc/QueueFactory.h"
-#include "fsfw/ipc/CommandMessage.h"
-#include "fsfw/devicehandlers/DeviceHandlerFailureIsolation.h"
+#include "fsfw/src/fsfw_hal/linux/serial/SerialComIF.h"
+#include "fsfw/src/fsfw_hal/linux/serial/SerialCookie.h"
 // --- JH ---
 
 #if OBSW_USE_TCP_SERVER == 0
@@ -98,38 +95,47 @@ void ObjectFactory::produce(void* args) {
 #endif
   new FsfwTestTask(objects::TEST_TASK, periodicEvent);
 
-  // ---------------- rwCommanderHandler ------------------------
+  // ---------------- RwHandler ------------------------
   // --- JH: ReactionWheelsHandler (minimal serial commander)
-(void) new SerialComIF(objects::RW_SERIAL_COM_IF);  // SystemObject registers itself
+  (void)new SerialComIF(objects::RW_SERIAL_COM_IF);  // SystemObject registers itself
 
-auto* rwCookie = new SerialCookie(
-    objects::RW_HANDLER,
-    "/dev/ttyACM0",                // ggf. anpassen
-    UartBaudRate::RATE_9600,
-    1024,
-    UartModes::NON_CANONICAL);
+  auto* rwCookie = new SerialCookie(objects::RW_HANDLER,
+                                    "/dev/ttyACM0",  // ggf. anpassen
+                                    UartBaudRate::RATE_9600, 1024, UartModes::NON_CANONICAL);
 
-rwCookie->setReadCycles(5);      // allow up to 5 read() attempts per GET_READ phase
-rwCookie->setToFlushInput(true); // optional: flush stale bytes after opening port
+  rwCookie->setReadCycles(5);       // allow up to 5 read() attempts per GET_READ phase
+  rwCookie->setToFlushInput(true);  // optional: flush stale bytes after opening port
 
-auto* rwHandler =
-    new ReactionWheelsHandler(objects::RW_HANDLER,
-                           objects::RW_SERIAL_COM_IF,
-                           rwCookie);
+  auto* rwHandler =
+      new ReactionWheelsHandler(objects::RW_HANDLER, objects::RW_SERIAL_COM_IF, rwCookie);
 
   // ---------------- RwPusService (PUS-220) --------------------
   // If you already have a common TM/TC services task, simply addComponent(rwPus) there.
   constexpr uint16_t RW_PUS_APID = 0x00EF;  // pick an APID suitable for your setup
-  auto* rwPus = new RwPusService(objects::RW_PUS_SERVICE,
-                               RW_PUS_APID,
-                               /*serviceId*/ 220,
-                               /*numParallelCommands*/ 4,
-                               /*timeoutSeconds*/ 5);
-
+  auto* rwPus = new RwPusService(objects::RW_PUS_SERVICE, RW_PUS_APID,
+                                 /*serviceId*/ 220,
+                                 /*numParallelCommands*/ 4,
+                                 /*timeoutSeconds*/ 5);
 
   PeriodicTaskIF* pusTask =
       TaskFactory::instance()->createPeriodicTask("PUS_RW_SERVICE", 35, 4096, 0.2, nullptr);
   pusTask->addComponent(rwPus);
   pusTask->startTask();
   // ---------------- RwPusService (PUS-220) --------------------
+
+  // ---------------- AcsController ------------------------
+
+  auto* acs = new AcsController(objects::RW_ACS_CTRL,
+                                std::array<object_id_t, 4>{objects::RW_HANDLER, 0, 0, 0});
+
+  // ACS task
+  auto* acsTask = TaskFactory::instance()->createPeriodicTask(
+      "RW_ACS", 55, PeriodicTaskIF::MINIMUM_STACK_SIZE, 0.05, nullptr);
+  auto res = acsTask->addComponent(objects::RW_ACS_CTRL);
+  if (res != returnvalue::OK) {
+    task::printInitError("RW_ACS", objects::RW_ACS_CTRL);
+  }
+  acsTask->startTask();
+
+  // ----------------- AcsController -----------------------
 }

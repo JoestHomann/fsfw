@@ -42,6 +42,7 @@ enum commonObjects : object_id_t {
   RW_SERIAL_COM_IF = 0x7302,
   RW_HANDLER = 0x4402,
   RW_PUS_SERVICE = 0x5020,
+  RW_ACS_CTRL = 0x4302AC51,
 
 };
 }
