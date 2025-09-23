@@ -1,6 +1,6 @@
-// fsfw/tmtcservices/RwPusService.cpp
 #include "RwPusService.h"
 
+#include <cmath>
 #include <cstring>
 #include <iomanip>
 
@@ -23,6 +23,12 @@ namespace {
 
 inline uint32_t be32(const uint8_t* p) {
   return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+}
+inline float be_f32(const uint8_t* p) {
+  const uint32_t u = be32(p);
+  float f;
+  std::memcpy(&f, &u, sizeof(float));
+  return f;
 }
 
 // Find a STATUS frame with CRC-16/CCITT (RwProtocol::STATUS_LEN bytes).
@@ -114,9 +120,10 @@ ReturnValue_t RwPusService::isValidSubservice(uint8_t subservice) {
     case Subservice::SET_SPEED:
     case Subservice::STOP:
     case Subservice::STATUS:
-    case Subservice::SET_TORQUE:    // NEW
+    case Subservice::SET_TORQUE:
     case Subservice::SET_MODE:
-    case Subservice::ACS_SET_ENABLE: // NEW
+    case Subservice::ACS_SET_ENABLE:
+    case Subservice::ACS_SET_TARGET:  // NEW
       return returnvalue::OK;
     default:
       return AcceptsTelecommandsIF::INVALID_SUBSERVICE;
@@ -131,16 +138,16 @@ ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t subservice, const u
   // First 4 bytes in AppData are always a target OID (RW handler or ACS controller)
   *objectId = static_cast<object_id_t>(be32(tcData));
 
-  // Default: resolve as DeviceHandler (RW)
-  auto* dh = ObjectManager::instance()->get<DeviceHandlerIF>(*objectId);
-
-  if (static_cast<Subservice>(subservice) == Subservice::ACS_SET_ENABLE) {
-    // Local operation in service: no device queue involved
+  // Local-only operations (handled in prepareCommand without sending to a device queue)
+  if (static_cast<Subservice>(subservice) == Subservice::ACS_SET_ENABLE ||
+      static_cast<Subservice>(subservice) == Subservice::ACS_SET_TARGET) {
     *id = MessageQueueIF::NO_QUEUE;
     lastTargetObjectId_ = *objectId;
     return returnvalue::OK;
   }
 
+  // Default: resolve as DeviceHandler (RW)
+  auto* dh = ObjectManager::instance()->get<DeviceHandlerIF>(*objectId);
   if (dh == nullptr) {
 #if RW_PUS_VERBOSE
     sif::warning << "PUS220 route: INVALID_OBJECT for objId=0x" << std::hex << *objectId << std::dec
@@ -189,7 +196,7 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       return returnvalue::OK;
     }
 
-    case Subservice::SET_TORQUE: {  // NEW
+    case Subservice::SET_TORQUE: {
       if (appLen < 2) return CommandingServiceBase::INVALID_TC;
       const int16_t tq = static_cast<int16_t>((app[0] << 8) | app[1]);
       store_address_t sid{};
@@ -242,10 +249,33 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
 #endif
         return CommandingServiceBase::INVALID_OBJECT;
       }
-      acs->setEnabled(enable);
+      acs->enable(enable);
       // Immediately emit typed ACS HK for operator feedback
       (void)emitAcsTypedHk(objectId);
       // No queue message -> treat as complete
+      return CommandingServiceBase::EXECUTION_COMPLETE;
+    }
+
+    case Subservice::ACS_SET_TARGET: {  // NEW: local handling, set target attitude (q_ref)
+      if (appLen < 16) return CommandingServiceBase::INVALID_TC;
+      float q0 = be_f32(app + 0);
+      float q1 = be_f32(app + 4);
+      float q2 = be_f32(app + 8);
+      float q3 = be_f32(app + 12);
+
+      // Normalize defensively
+      float n = std::sqrt(q0*q0 + q1*q1 + q2*q2 + q3*q3);
+      if (n > 1e-6f) { q0/=n; q1/=n; q2/=n; q3/=n; } else { q0=1.f; q1=q2=q3=0.f; }
+
+      auto* acs = ObjectManager::instance()->get<AcsController>(objectId);
+      if (acs == nullptr) {
+        return CommandingServiceBase::INVALID_OBJECT;
+      }
+      acs->setTargetAttitude(std::array<float,4>{q0,q1,q2,q3});
+
+      // Optional: emit typed HK to see new command reflected quickly
+      (void)emitAcsTypedHk(objectId);
+
       return CommandingServiceBase::EXECUTION_COMPLETE;
     }
 
@@ -402,8 +432,8 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
 }
 
 void RwPusService::handleUnrequestedReply(CommandMessage* reply) {
-  const auto cmd = reply->getCommand();
 #if RW_PUS_VERBOSE
+  const auto cmd = reply->getCommand();
   sif::warning << "RwPusService::handleUnrequestedReply cmd=0x" << std::hex << int(cmd) << " ("
                << cmdName(cmd) << ")" << std::dec << std::endl;
 #endif
@@ -439,20 +469,19 @@ ReturnValue_t RwPusService::emitAcsTypedHk(object_id_t acsObjectId) {
     return CommandingServiceBase::INVALID_OBJECT;
   }
 
-  AcsDiagSnapshot snap{};
-  acs->fillDiagSnapshot(snap);
+  AcsDiagSnapshot snap = acs->getDiag();
 
   // AppData layout (big-endian):
-  // [OID(4) | ver(1) | enabled(1) | kd[3]*f32 | tauDes[3]*f32 | tauWheel[4]*f32 | dt_ms(u32)]
+  // [OID(4) | ver(1) | enabled(1) | Kd[3]*f32 | tauDes[3]*f32 | tauWheelCmd[4]*f32 | dtMs(u32)]
   uint8_t app[50] = {};
   size_t off = 0;
   be_store_u32(&app[off], static_cast<uint32_t>(acsObjectId)); off += 4;
   app[off++] = snap.version;
   app[off++] = snap.enabled ? 1 : 0;
-  for (int i = 0; i < 3; ++i) { be_store_f32(&app[off], snap.kd[i]); off += 4; }
+  for (int i = 0; i < 3; ++i) { be_store_f32(&app[off], snap.Kd[i]); off += 4; }
   for (int i = 0; i < 3; ++i) { be_store_f32(&app[off], snap.tauDes[i]); off += 4; }
-  for (int i = 0; i < 4; ++i) { be_store_f32(&app[off], snap.tauWheel[i]); off += 4; }
-  be_store_u32(&app[off], snap.dt_ms); off += 4;
+  for (int i = 0; i < 4; ++i) { be_store_f32(&app[off], snap.tauWheelCmd[i]); off += 4; }
+  be_store_u32(&app[off], snap.dtMs); off += 4;
 
   const auto prv = tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_ACS_HK_TYPED),
                                             app, off);

@@ -1,4 +1,3 @@
-// example_common/mission/acs/AcsController.h
 #pragma once
 
 #include <array>
@@ -8,49 +7,81 @@
 #include "fsfw/objectmanager/SystemObject.h"
 #include "fsfw/returnvalues/returnvalue.h"
 #include "fsfw/tasks/ExecutableObjectIF.h"
+#include "fsfw/serviceinterface/ServiceInterfaceStream.h"
 
-/**
- * Minimal ACS controller scaffolding:
- * - Holds enable flag.
- * - Provides a diagnostic snapshot for typed TM.
- * - Periodic performOperation() can be extended later (guidance/estimator/controller/allocator).
- */
+// NEW: messaging + storage + device IF
+#include "fsfw/ipc/QueueFactory.h"
+#include "fsfw/ipc/MessageQueueIF.h"
+#include "fsfw/ipc/MessageQueueSenderIF.h"
+#include "fsfw/objectmanager/ObjectManager.h"
+#include "fsfw/storagemanager/StorageManagerIF.h"
+#include "fsfw/storagemanager/storeAddress.h"
+#include "fsfw/devicehandlers/DeviceHandlerIF.h"
+#include "fsfw/devicehandlers/DeviceHandlerMessage.h"
+
+#include "AcsConfig.h"
+#include "Estimator.h"
+#include "Guidance.h"
+#include "RwAllocator.h"
+
+// Forward declare to avoid include cycles
+class ReactionWheelsHandler;
+
 struct AcsDiagSnapshot {
-  uint8_t version{1};     // typed TM format version
-  bool    enabled{false};
-  float   kd[3]{0.0f, 0.0f, 0.0f};
-  float   tauDes[3]{0.0f, 0.0f, 0.0f};    // desired body torques [mNm]
-  float   tauWheel[4]{0.0f, 0.0f, 0.0f, 0.0f}; // per-wheel torque [mNm]
-  uint32_t dt_ms{50};     // control step [ms]
+  uint8_t version{1};
+  bool enabled{false};
+  std::array<float,4> qRef{ {1,0,0,0} };
+  std::array<float,4> qTrue{ {1,0,0,0} };
+  std::array<float,3> wTrue{ {0,0,0} };
+  std::array<float,3> wMeas{ {0,0,0} };
+  std::array<float,3> Kp{ {0,0,0} };
+  std::array<float,3> Kd{ {0,0,0} };
+  std::array<float,3> tauDes{ {0,0,0} };        // body [mNm]
+  std::array<float,4> tauWheelCmd{ {0,0,0,0} }; // wheel [mNm]
+  uint32_t dtMs{50};
 };
 
 class AcsController : public SystemObject, public ExecutableObjectIF {
  public:
-  AcsController(object_id_t objectId, std::array<object_id_t, 4> wheelIds);
+  AcsController(object_id_t objectId,
+                std::array<object_id_t, 4> wheelIds,
+                const acs::Config& cfg = acs::DEFAULT);
 
-  // ExecutableObjectIF
-  ReturnValue_t performOperation(uint8_t opCode = 0) override;
+  ReturnValue_t performOperation(uint8_t opCode) override;
 
-  // Enable/disable ACS control loop
-  void setEnabled(bool en) { enabled_.store(en, std::memory_order_relaxed); }
-  bool isEnabled() const { return enabled_.load(std::memory_order_relaxed); }
+  void enable(bool on) { enabled_.store(on); }
+  void setTargetAttitude(const std::array<float,4>& q_ref) { guidance_.setTargetQuat(q_ref); }
 
-  // Fill diagnostic snapshot (thread-safe copy)
-  void fillDiagSnapshot(AcsDiagSnapshot& out) const;
+  void setGains(const std::array<float,3>& Kp, const std::array<float,3>& Kd) { Kp_ = Kp; Kd_ = Kd; }
 
-  // Optionally expose a way to update controller gains
-  void setKd(float kx, float ky, float kz);
+  AcsDiagSnapshot getDiag() const;
 
  private:
+  acs::Config cfg_;
   std::array<object_id_t, 4> rwIds_{};
   std::atomic<bool> enabled_{false};
 
-  // Simple internal state (would be updated by your real control pipeline)
-  float kd_[3]{0.0f, 0.0f, 0.0f};
-  float tauDes_[3]{0.0f, 0.0f, 0.0f};
-  float tauWheel_[4]{0.0f, 0.0f, 0.0f};
-  uint32_t dtMs_{50}; // example 20 Hz
+  Estimator   estimator_;
+  Guidance    guidance_;
+  RwAllocator allocator_;
 
-  // Helper to simulate/update some values (placeholder)
-  void updateInternalDemo_();
+  std::array<float,3> Kp_{ {0.2f, 0.2f, 0.2f} };
+  std::array<float,3> Kd_{ {0.05f, 0.05f, 0.05f} };
+  std::array<float,3> tauDes_{ {0,0,0} };
+  std::array<float,4> tauWheelCmd_{ {0,0,0,0} };
+  std::array<float,4> qErr_{ {1,0,0,0} };
+  uint32_t dtMs_{50};
+
+  // NEW: messaging resources
+  MessageQueueIF*    myQueue_{nullptr};
+  StorageManagerIF*  ipcStore_{nullptr};
+
+  // Helpers
+  static void quatConj_(const float q[4], float qc[4]);
+  static void quatMul_(const float a[4], const float b[4], float out[4]);
+  static void clamp3_(float v[3], float maxAbs);
+  void rateLimit3_(float v[3], const float vPrev[3], float rateLimitPerSec, float dt);
+
+  // RW hookup
+  void sendWheelTorques_(const std::array<float,4>& tauWheel_mNm);
 };

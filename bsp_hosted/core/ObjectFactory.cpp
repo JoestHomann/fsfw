@@ -12,7 +12,7 @@
 #include "fsfw/tmtcservices/CommandingServiceBase.h"
 #include "fsfw_hal/host/HostFilesystem.h"
 
-// --- JH: ReactionWheelsHandler & PUS service ---
+// --- JH: ReactionWheelsHandler & PUS service & ACS ---
 #include "example_common/mission/acs/AcsController.h"
 #include "fsfw/devicehandlers/DeviceHandlerFailureIsolation.h"
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"
@@ -24,6 +24,8 @@
 #include "fsfw/src/fsfw/tmtcservices/RwPusService.h"
 #include "fsfw/src/fsfw_hal/linux/serial/SerialComIF.h"
 #include "fsfw/src/fsfw_hal/linux/serial/SerialCookie.h"
+#include "example_common/mission/acs/AcsConfig.h"
+#include "example_common/mission/acs/AcsController.h"
 // --- JH ---
 
 #if OBSW_USE_TCP_SERVER == 0
@@ -126,23 +128,23 @@ void ObjectFactory::produce(void* args) {
   // ---------------- RwPusService (PUS-220) --------------------
 
   // ---------------- AcsController ------------------------
+  auto* acs = new AcsController(
+      objects::RW_ACS_CTRL,
+      std::array<object_id_t, 4>{objects::RW_HANDLER, 0, 0, 0},  // only RW0 for now
+      acs::DEFAULT  // use the single, global default snapshot
+  );
 
-  auto* acs = new AcsController(objects::RW_ACS_CTRL,
-                                std::array<object_id_t, 4>{objects::RW_HANDLER, 0, 0, 0});
+  // Task period derived from the same config to avoid mismatches
+  const double acsPeriod = static_cast<double>(acs::DEFAULT.timing.dt());
 
-  (void)acs;
-
-  // ACS task
   auto* acsTask = TaskFactory::instance()->createPeriodicTask(
-      "RW_ACS", 55, PeriodicTaskIF::MINIMUM_STACK_SIZE, 0.05, nullptr);
+      "RW_ACS", 55, PeriodicTaskIF::MINIMUM_STACK_SIZE, acsPeriod, nullptr);
+
   auto res = acsTask->addComponent(objects::RW_ACS_CTRL);
   if (res != returnvalue::OK) {
-    // Fallback logging if TaskCreation helper is not available.
-    sif::error << "RW_ACS: addComponent failed for object 0x" << std::hex << objects::RW_ACS_CTRL
+    sif::error << "RW_ACS: addComponent failed for 0x" << std::hex << objects::RW_ACS_CTRL
                << std::dec << std::endl;
   }
-
   acsTask->startTask();
-
   // ----------------- AcsController -----------------------
 }

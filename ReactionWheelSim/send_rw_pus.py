@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import socket, struct, itertools, time, threading
+import socket, struct, itertools, time, threading, math
 
 # --------- Transport to FSFW UDP bridge (hosted example) ----------
 UDP_HOST = "127.0.0.1"
@@ -13,21 +13,22 @@ SRC_ID  = 0x0001
 SERVICE = 220              # RwPusService
 
 # Subservices (TC)
-SUB_SET_SPEED       = 1
-SUB_STOP            = 2
-SUB_STATUS          = 3
-SUB_SET_TORQUE      = 4       # NEW
-SUB_SET_MODE        = 10
-SUB_ACS_SET_ENABLE  = 140     # NEW
+SUB_SET_SPEED        = 1
+SUB_STOP             = 2
+SUB_STATUS           = 3
+SUB_SET_TORQUE       = 4
+SUB_SET_MODE         = 10
+SUB_ACS_SET_ENABLE   = 140
+SUB_ACS_SET_TARGET   = 141   # NEW
 
 # Subservices (TM)
-SUB_TM_STATUS_LEGACY = 130    # legacy compact TM (RW)
-SUB_TM_STATUS_TYPED  = 131    # typed RW status (v1)
-SUB_TM_ACS_TYPED     = 132    # typed ACS HK (v1)  NEW
+SUB_TM_STATUS_LEGACY = 130   # legacy compact TM (RW)
+SUB_TM_STATUS_TYPED  = 131   # typed RW status (v1)
+SUB_TM_ACS_TYPED     = 132   # typed ACS HK (v1)
 
 # Housekeeping Service
 SVC_HK                 = 3
-SUB_HK_REPORT_PERIODIC = 25    # periodic HK report (Svc 3 / Sub 25)
+SUB_HK_REPORT_PERIODIC = 25   # periodic HK report (Svc 3 / Sub 25)
 
 # DeviceHandler modes (FSFW default enum values)
 MODE_OFF    = 0
@@ -79,8 +80,9 @@ def build_tc(apid, service, subservice, app_data: bytes, seq_count):
     return pkt
 
 # ---------- Helpers ----------
-def be_u32(x): return struct.pack(">I", x)
-def be_i16(x): return struct.pack(">h", x)
+def be_u32(x): return struct.pack(">I", int(x) & 0xFFFFFFFF)
+def be_i16(x): return struct.pack(">h", int(x))
+def be_f32(x): return struct.pack(">f", float(x))
 
 def make_socket():
     # one connected UDP socket to send and receive TM from the same source port
@@ -101,15 +103,12 @@ def parse_service_subservice(data: bytes):
 
 def handle_tm_typed_rw_131(data: bytes, rw_oid: int):
     """Decode typed RW TM (220/131, v1). AppData layout per your typed format."""
-    # Expect: [ver=1][OID_BE]... somewhere after PUS sec-hdr
     marker = bytes([1]) + rw_oid.to_bytes(4, "big")
     start = data.find(marker, 9)
-    # Length depends on your exact RW typed format; previous example used 28 bytes total after 'ver'
     if start == -1 or start + 28 > len(data):
         return False
     try:
-        # Example: ver(1), oid(4), speed(i16), torque(i16), running(u8),
-        # flags(u16), error(u16), crcErr(u32), malf(u32), tsMs(u32), sample(u16)  -> 1+4+2+2+1+2+2+4+4+4+2 = 28
+        # Example layout (adjust if you change onboard format):
         ver, oid_be, speed, torque, running, flags, err, crc_cnt, mal_cnt, ts_ms, sample = \
             struct.unpack(">B I h h B H H I I I H", data[start:start+28])
     except struct.error:
@@ -136,7 +135,7 @@ def handle_tm_legacy_rw_130(data: bytes, rw_oid: int):
 
 def handle_tm_acs_typed_132(data: bytes, acs_oid: int):
     """Decode typed ACS HK (220/132, v1).
-       Layout: [OID(4) | ver(1) | enabled(1) | kd[3]*f32 | tauDes[3]*f32 | tauWheel[4]*f32 | dt_ms(u32)] = 50 bytes
+       Layout: [OID(4) | ver(1) | enabled(1) | kd[3]*f32 | tauDes[3]*f32 | tauWheelCmd[4]*f32 | dtMs(u32)] = 50 bytes
     """
     marker = acs_oid.to_bytes(4, "big")
     start = data.find(marker, 9)
@@ -248,6 +247,19 @@ def acs_set_enable(sock, acs_oid_u32, enable, seq):
     pkt = build_tc(APID, SERVICE, SUB_ACS_SET_ENABLE, app, seq)
     send_tc(sock, pkt)
 
+def acs_set_target(sock, acs_oid_u32, q, seq):
+    """Send ACS_SET_TARGET with quaternion q=(q0,q1,q2,q3), big-endian float32."""
+    q0, q1, q2, q3 = map(float, q)
+    n = math.sqrt(q0*q0 + q1*q1 + q2*q2 + q3*q3)
+    if n > 1e-9:
+        q0, q1, q2, q3 = (q0/n, q1/n, q2/n, q3/n)
+    else:
+        # fall back to identity if invalid
+        q0, q1, q2, q3 = 1.0, 0.0, 0.0, 0.0
+    app = be_u32(acs_oid_u32) + be_f32(q0) + be_f32(q1) + be_f32(q2) + be_f32(q3)
+    pkt = build_tc(APID, SERVICE, SUB_ACS_SET_TARGET, app, seq)
+    send_tc(sock, pkt)
+
 # ---------- CLI ----------
 HELP = """\
 Commands:
@@ -258,6 +270,8 @@ Commands:
   mode <off|on|normal|raw> [sub]   - Send SET_MODE (default sub=0)
 
   acs_enable <0|1>       - Enable(1)/Disable(0) ACS controller (to ACS_OID)
+  att <q0> <q1> <q2> <q3> - Set ACS target attitude (quaternion; auto-normalized)   # NEW
+
   oid <hex|dec>          - Change RW target object id (default 0x00004402)
   acs_oid <hex|dec>      - Change ACS target object id (default 0x0000AC51)
 
@@ -394,6 +408,21 @@ def main():
                 en = (parts[1] == "1")
                 print(f"Sending ACS_SET_ENABLE {int(en)} to ACS 0x{oids['acs']:08X}")
                 acs_set_enable(sock, oids["acs"], en, next(seq))
+
+            elif cmd in ("att", "acs_att", "attitude"):
+                # att q0 q1 q2 q3  (float32 BE, auto-normalized)
+                if len(parts) != 5:
+                    print("usage: att <q0> <q1> <q2> <q3>")
+                    continue
+                try:
+                    q = tuple(float(x) for x in parts[1:5])
+                except ValueError:
+                    print("Invalid quaternion component(s)")
+                    continue
+                n = math.sqrt(sum(v*v for v in q))
+                qn = tuple((v / n) if n > 1e-9 else (1.0 if i == 0 else 0.0) for i, v in enumerate(q))
+                print(f"Sending ACS_SET_TARGET q={qn} to ACS 0x{oids['acs']:08X}")
+                acs_set_target(sock, oids["acs"], qn, next(seq))
 
             elif cmd == "listen":
                 secs = float(parts[1]) if len(parts) >= 2 else 5.0

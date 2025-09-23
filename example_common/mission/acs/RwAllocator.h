@@ -1,21 +1,23 @@
+// example_common/mission/acs/RwAllocator.h
 #pragma once
-
 #include <array>
+#include "AcsConfig.h"
 
-// Minimal allocator mapping desired body torque to wheel torques.
-// For the 1-wheel demo, we map Z-axis torque to wheel #0, others 0.
-// Extend to a full B-matrix pseudo-inverse when you add more wheels.
-
+/**
+ * Maps desired body torque [mNm] to per-wheel torques [mNm] using pseudo-inverse of B.
+ * B is 3x4 (columns are unit wheel axes in body frame).
+ */
 class RwAllocator {
  public:
-  RwAllocator() = default;
+  explicit RwAllocator(const acs::Config& cfg);
 
-  // tauDes[3] -> tauWheel[4]
-  void solve(const float tauDes[3], float tauWheel[4]) const {
-    // Trivial demo mapping:
-    tauWheel[0] = -tauDes[2]; // assume wheel 0 roughly aligned with +Z body
-    tauWheel[1] = 0.0f;
-    tauWheel[2] = 0.0f;
-    tauWheel[3] = 0.0f;
-  }
+  void setAxes(const acs::Axes3x4& Bcols);
+  const acs::Axes3x4& axes() const { return B_; }
+
+  // tauDes [mNm] -> tauWheel [mNm]; simple min-norm solution via B+ = B^T (B B^T)^{-1}
+  void solve(const float tauDes[3], float tauWheel[4]) const;
+
+ private:
+  acs::Config  cfg_;
+  acs::Axes3x4 B_;
 };

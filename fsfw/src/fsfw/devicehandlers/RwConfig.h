@@ -59,7 +59,7 @@ namespace Pus220 {
   // Telemetry
   constexpr uint8_t TM_STATUS_RAW   = 130; // legacy/raw STATUS (if still used)
   constexpr uint8_t TM_STATUS_TYPED = 131; // typed RW status TM
-  constexpr uint8_t TM_ACS_DIAG     = 132; // NEW: typed ACS diagnostics TM
+  constexpr uint8_t TM_ACS_DIAG     = 132; // typed ACS diagnostics TM
 } // namespace Pus220
 
 // ----- ACS controller defaults ----------------------------------------------

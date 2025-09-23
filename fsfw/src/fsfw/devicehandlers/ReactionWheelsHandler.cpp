@@ -1,4 +1,3 @@
-// fsfw/devicehandlers/ReactionWheelsHandler.cpp
 #include "ReactionWheelsHandler.h"
 
 #include <cmath>
@@ -37,6 +36,7 @@ static inline void dumpHexWarn(const char*, const uint8_t*, size_t) {}
 ReactionWheelsHandler::ReactionWheelsHandler(object_id_t objectId, object_id_t comIF,
                                              CookieIF* cookie)
     : DeviceHandlerBase(objectId, comIF, cookie) {
+  // Configure RX ring as FIFO of receive sizes to mitigate bursty UART
   rxRing.setToUseReceiveSizeFIFO(/*fifoDepth*/ 8);
   (void)rxRing.initialize();
 }
@@ -59,7 +59,7 @@ void ReactionWheelsHandler::modeChanged() {
 }
 
 ReturnValue_t ReactionWheelsHandler::initializeAfterTaskCreation() {
-  // Keep base init
+  // Base init
   ReturnValue_t rv = DeviceHandlerBase::initializeAfterTaskCreation();
   if (rv != returnvalue::OK) {
     return rv;
@@ -130,7 +130,7 @@ ReturnValue_t ReactionWheelsHandler::drainRxIntoRing() {
 }
 
 ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t* id) {
-  // Timeout supervision
+  // Timeout supervision for previous poll
   if (statusAwaitCnt >= 0) {
     if (++statusAwaitCnt > STATUS_TIMEOUT_CYCLES) {
       triggerEvent(RwEvents::TIMEOUT, 0, 0);
@@ -211,14 +211,15 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       return returnvalue::OK;
     }
 
-    case CMD_SET_TORQUE: {  // NEW
+    case CMD_SET_TORQUE: {
+      // Payload is int16_t mNm
       if (len < sizeof(int16_t)) {
         return returnvalue::FAILED;
       }
       int16_t tq = 0;
       std::memcpy(&tq, data, sizeof(tq));
 
-      // Safety clamp (absolute)
+      // Absolute safety clamp in mNm
       const int16_t lim = RwConfig::MAX_TORQUE_MNM_DEFAULT;
       if (lim > 0) {
         if (tq >  lim) tq =  lim;
@@ -268,7 +269,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
 
 void ReactionWheelsHandler::fillCommandAndReplyMap() {
   insertInCommandMap(CMD_SET_SPEED,   false, 0);
-  insertInCommandMap(CMD_SET_TORQUE,  false, 0);  // NEW
+  insertInCommandMap(CMD_SET_TORQUE,  false, 0);  // supports direct torque command
   insertInCommandMap(CMD_STOP,        false, 0);
 
   insertInCommandAndReplyMap(CMD_STATUS_POLL, 5, &replySet, RwProtocol::STATUS_LEN,
@@ -397,6 +398,7 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   const uint8_t* pkt = replySet.raw.isValid() ? replySet.raw.value : packet;
   dumpHexWarn("interpretDeviceReply: frame", pkt, RwProtocol::STATUS_LEN);
 
+  // Example decoding: adjust byte offsets to your wire protocol
   const int16_t speed   = static_cast<int16_t>((pkt[2] << 8) | pkt[3]);
   const int16_t torque  = static_cast<int16_t>((pkt[4] << 8) | pkt[5]);
   const uint8_t running = pkt[6];
@@ -406,13 +408,13 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
 
   // Update HK snapshot
   hkSet.setValidity(false, true);
-  hkSet.speedRpm.value    = speed;
-  hkSet.torque_mNm.value  = torque;
-  hkSet.running.value     = running;
-  hkSet.flags.value       = 0;
-  hkSet.error.value       = 0;
-  hkSet.crcErrCnt.value   = crcErrCnt;
-  hkSet.malformedCnt.value= malformedCnt;
+  hkSet.speedRpm.value     = speed;
+  hkSet.torque_mNm.value   = torque;
+  hkSet.running.value      = running;
+  hkSet.flags.value        = 0;
+  hkSet.error.value        = 0;
+  hkSet.crcErrCnt.value    = crcErrCnt;
+  hkSet.malformedCnt.value = malformedCnt;
 
   uint32_t ms = 0;
   Clock::getUptime(&ms);
@@ -427,9 +429,8 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   hkSet.malformedCnt.setValid(true);
   hkSet.timestampMs.setValid(true);
   hkSet.setValidity(true, true);
-  // Note: No dataset commit() required here.
 
-  // Simple FDIR
+  // Simple FDIR examples
   const bool stuckCond = (hkSet.running.value == 0) &&
                          (std::abs(static_cast<int>(hkSet.speedRpm.value)) > STUCK_RPM_THRESH);
   if (stuckCond) {
@@ -491,17 +492,14 @@ ReturnValue_t ReactionWheelsHandler::initializeLocalDataPool(localpool::DataPool
                                                              LocalDataPoolManager&) {
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::RAW_REPLY),
                            new PoolEntry<uint8_t>(RwProtocol::STATUS_LEN));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM), new PoolEntry<int16_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm), new PoolEntry<int16_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_RUNNING), new PoolEntry<uint8_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_FLAGS), new PoolEntry<uint16_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_ERROR), new PoolEntry<uint16_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT),
-                           new PoolEntry<uint32_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_MALFORMED_CNT),
-                           new PoolEntry<uint32_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS),
-                           new PoolEntry<uint32_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM),   new PoolEntry<int16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm),  new PoolEntry<int16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_RUNNING),     new PoolEntry<uint8_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_FLAGS),       new PoolEntry<uint16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_ERROR),       new PoolEntry<uint16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT), new PoolEntry<uint32_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_MALFORMED_CNT), new PoolEntry<uint32_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS),  new PoolEntry<uint32_t>(1));
   return returnvalue::OK;
 }
 

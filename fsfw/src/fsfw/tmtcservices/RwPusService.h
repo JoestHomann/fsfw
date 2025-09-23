@@ -1,4 +1,3 @@
-// fsfw/tmtcservices/RwPusService.h
 #pragma once
 
 #include "commonObjects.h"
@@ -13,17 +12,18 @@
  * PUS Service 220 for Reaction Wheel & ACS control.
  *
  * Telecommands (TC):
- *   1   = SET_SPEED      (AppData: RW_OID(4) | i16 rpm)
- *   2   = STOP           (AppData: RW_OID(4))
- *   3   = STATUS         (AppData: RW_OID(4))
- *   4   = SET_TORQUE     (AppData: RW_OID(4) | i16 torque_mNm)   // NEW
- *   10  = SET_MODE       (AppData: TARGET_OID(4) | u8 mode | u8 submode)
- *   140 = ACS_SET_ENABLE (AppData: ACS_OID(4) | u8 enable)       // NEW
+ *   1   = SET_SPEED       (AppData: RW_OID(4) | i16 rpm)
+ *   2   = STOP            (AppData: RW_OID(4))
+ *   3   = STATUS          (AppData: RW_OID(4))
+ *   4   = SET_TORQUE      (AppData: RW_OID(4) | i16 torque_mNm)
+ *   10  = SET_MODE        (AppData: TARGET_OID(4) | u8 mode | u8 submode)
+ *   140 = ACS_SET_ENABLE  (AppData: ACS_OID(4) | u8 enable)
+ *   141 = ACS_SET_TARGET  (AppData: ACS_OID(4) | f32 q[4] big-endian)   // NEW
  *
  * Telemetry (TM):
  *   220/130 = TM_STATUS (legacy wheel status typed by raw-parser in Python tool)
  *   220/132 = TM_ACS_HK_TYPED  (AppData: ACS_OID(4) | u8 ver | u8 enabled |
- *                               float kd[3] | float tauDes[3] | float tauWheel[4] | u32 dt_ms)
+ *                               float Kd[3] | float tauDes[3] | float tauWheelCmd[4] | u32 dtMs)
  */
 class RwPusService : public CommandingServiceBase {
  public:
@@ -31,11 +31,12 @@ class RwPusService : public CommandingServiceBase {
     SET_SPEED       = 1,
     STOP            = 2,
     STATUS          = 3,
-    SET_TORQUE      = 4,    // NEW
+    SET_TORQUE      = 4,
     SET_MODE        = 10,
     TM_STATUS       = 130,
-    TM_ACS_HK_TYPED = 132,  // NEW
-    ACS_SET_ENABLE  = 140   // NEW
+    TM_ACS_HK_TYPED = 132,
+    ACS_SET_ENABLE  = 140,
+    ACS_SET_TARGET  = 141  // NEW
   };
 
   RwPusService(object_id_t objectId, uint16_t apid, uint8_t serviceId = 220,
