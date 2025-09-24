@@ -1,26 +1,22 @@
 #include "AcsController.h"
 
-#include <cmath>
-#include <limits>
-#include <iomanip>
 #include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <limits>
 
-// FSFW datapool
 #include "fsfw/datapoollocal/LocalPoolVariable.h"
-// Objects IDs (contains IPC_STORE)
 #include "commonObjects.h"
-// Device handler messaging
-#include "fsfw/devicehandlers/DeviceHandlerIF.h"
 #include "fsfw/devicehandlers/ReactionWheelsHandler.h"
 #include "fsfw/ipc/CommandMessage.h"
 #include "fsfw/ipc/MessageQueueSenderIF.h"
 #include "fsfw/action/ActionMessage.h"
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
 
-// Print every X control loop iterations (e.g. X=25 @ 5 Hz ≈ 5 s)
-#ifndef ACS_LOG_ATT_DIV
-#define ACS_LOG_ATT_DIV 10
-#endif
+// ACS controller implementation
+// Runs the closed loop each task cycle: read wheel HK, propagate estimator,
+// compute torque via cascaded Att-P -> Rate-PI with anti-windup, allocate
+// to wheels, send torque commands. Designed to be readable and robust.
 
 namespace {
 constexpr float PI_F = 3.14159265358979323846f;
@@ -28,77 +24,13 @@ constexpr float PI_F = 3.14159265358979323846f;
 // Last-sent int16 torques per wheel (anti-spam / hysteresis)
 int16_t gLastSentInt16[4] = {0, 0, 0, 0};
 
-// ======== Controller (Variant A) defaults ========
-// Outer loop: attitude P -> rate reference (rad/s)
-#ifndef ACS_KATT_X
-#define ACS_KATT_X 0.04f
-#endif
-#ifndef ACS_KATT_Y
-#define ACS_KATT_Y 0.04f
-#endif
-#ifndef ACS_KATT_Z
-#define ACS_KATT_Z 0.04f
-#endif
-#ifndef ACS_WREF_MAX_X
-#define ACS_WREF_MAX_X 0.02f  // ~1.15 deg/s
-#endif
-#ifndef ACS_WREF_MAX_Y
-#define ACS_WREF_MAX_Y 0.02f
-#endif
-#ifndef ACS_WREF_MAX_Z
-#define ACS_WREF_MAX_Z 0.02f
-#endif
+// Persistent controller state (single instance)
+float gIstate[3]  = {0.f, 0.f, 0.f}; // PI integrator state [mNm]
+float gOmegaF[3]  = {0.f, 0.f, 0.f}; // LPF body rates [rad/s]
+bool  gInitStates = false;           // one-time init guard
 
-// Inner loop: rate-PI gains (mNm/(rad/s)) and (mNm/rad)
-#ifndef ACS_KPW_X
-#define ACS_KPW_X 100.0f
-#endif
-#ifndef ACS_KPW_Y
-#define ACS_KPW_Y 100.0f
-#endif
-#ifndef ACS_KPW_Z
-#define ACS_KPW_Z 100.0f
-#endif
-
-#ifndef ACS_KIW_X
-#define ACS_KIW_X 20.0f
-#endif
-#ifndef ACS_KIW_Y
-#define ACS_KIW_Y 20.0f
-#endif
-#ifndef ACS_KIW_Z
-#define ACS_KIW_Z 20.0f
-#endif
-
-// Anti-windup back-calculation gain (1/s): i += (Ki*e + K_aw*(tau_sat - tau_unsat)) * dt
-#ifndef ACS_KAW
-#define ACS_KAW 2.0f
-#endif
-
-// 1st-order low-pass on measured omega (Hz). 0 => disabled
-#ifndef ACS_OMEGA_LP_FC_HZ
-#define ACS_OMEGA_LP_FC_HZ 1.0f
-#endif
-
-// Keep <= per-step increment to avoid eating small commands.
-// For 5 Hz and torqueRateLimit=5 mNm/s -> 1 mNm per step; 0.25–0.5 is a good start.
-#ifndef ACS_MIN_CMD_ABS_MNM
-#define ACS_MIN_CMD_ABS_MNM 0.25f
-#endif
-
-// Debug prints
-#ifndef ACS_VERBOSE
-#define ACS_VERBOSE 1
-#endif
-
-// ======== Persistent controller state (single instance) ========
-// English: PI integrator state [mNm] per axis, and low-pass filtered omega [rad/s]
-float gIstate[3]   = {0.f, 0.f, 0.f};
-float gOmegaF[3]   = {0.f, 0.f, 0.f};
-bool  gStatesInit  = false;  // (re)initialize on enable-edge
-
-// Quaternion -> yaw(Z), pitch(Y), roll(X) [radians]
-inline void quatToYpr(const float q[4], float& yaw, float& pitch, float& roll) {
+// Convert quaternion to yaw(Z), pitch(Y), roll(X) in radians
+static inline void quatToYpr(const float q[4], float& yaw, float& pitch, float& roll) {
   // roll (x-axis rotation)
   const float sinr_cosp = 2.0f * (q[0]*q[1] + q[2]*q[3]);
   const float cosr_cosp = 1.0f - 2.0f * (q[1]*q[1] + q[2]*q[2]);
@@ -107,7 +39,7 @@ inline void quatToYpr(const float q[4], float& yaw, float& pitch, float& roll) {
   // pitch (y-axis rotation)
   const float sinp = 2.0f * (q[0]*q[2] - q[3]*q[1]);
   if (std::fabs(sinp) >= 1.0f) {
-    pitch = std::copysign(PI_F / 2.0f, sinp);  // clamp to 90°
+    pitch = std::copysign(PI_F / 2.0f, sinp); // clamp at +/- 90 deg
   } else {
     pitch = std::asin(sinp);
   }
@@ -119,18 +51,7 @@ inline void quatToYpr(const float q[4], float& yaw, float& pitch, float& roll) {
 }
 } // namespace
 
-// ========================= DEBUG / FORCE TORQUE SWITCHES =========================
-#ifndef ACS_FORCE_TORQUE_ENABLE
-#define ACS_FORCE_TORQUE_ENABLE 0
-#endif
-#ifndef ACS_FORCE_TORQUE_MNM
-#define ACS_FORCE_TORQUE_MNM 0  // mNm
-#endif
-#ifndef ACS_FORCE_TORQUE_WHEEL_MASK
-#define ACS_FORCE_TORQUE_WHEEL_MASK 0x1 // Bit0..Bit3 for RW0..RW3
-#endif
-// ================================================================================
-
+// Construct controller and wire submodules
 AcsController::AcsController(object_id_t objectId, std::array<object_id_t, 4> wheelIds,
                              const acs::Config& cfg)
     : SystemObject(objectId),
@@ -139,16 +60,18 @@ AcsController::AcsController(object_id_t objectId, std::array<object_id_t, 4> wh
       estimator_(cfg),
       guidance_(),
       allocator_(cfg) {
-  // Ensure axes (B matrix) propagated to submodules
+  // Propagate axes to estimator and allocator
   estimator_.setAxes(cfg_.Bcols);
   allocator_.setAxes(cfg_.Bcols);
+
+  // Cache dt in ms for TM
   dtMs_ = cfg_.timing.dtMs;
 
-  // Map legacy Kp_/Kd_ to new parameters for TM visibility:
-  // Kp_ -> attitude gains (1/s), Kd_ -> rate-P gains (mNm/(rad/s))
-  Kp_ = {ACS_KATT_X, ACS_KATT_Y, ACS_KATT_Z};
-  Kd_ = {ACS_KPW_X,  ACS_KPW_Y,  ACS_KPW_Z};
+  // Map config gains to TM-visible fields (Kp = attitude-P, Kd = rate-P)
+  Kp_ = {cfg_.ctrl.outer.kAttX, cfg_.ctrl.outer.kAttY, cfg_.ctrl.outer.kAttZ};
+  Kd_ = {cfg_.ctrl.inner.KpwX,  cfg_.ctrl.inner.KpwY,  cfg_.ctrl.inner.KpwZ};
 
+  // Setup IPC resources
   myQueue_ = QueueFactory::instance()->createMessageQueue(3);
   ipcStore_ = ObjectManager::instance()->get<StorageManagerIF>(objects::IPC_STORE);
   if (ipcStore_ == nullptr) {
@@ -156,16 +79,18 @@ AcsController::AcsController(object_id_t objectId, std::array<object_id_t, 4> wh
   }
 }
 
+// Task entry: one closed-loop step
 ReturnValue_t AcsController::performOperation(uint8_t) {
   const float dt = cfg_.timing.dt();
 
-  // --- Edge detect: enabled (on/off) ---
+  // Detect enable edge to safely stop wheels and reset state
   const bool enabledNow = enabled_.load();
   static bool prevEnabled = false;
 
+  // Disabled path: optionally send STOP once on falling edge and clear state
   if (!enabledNow) {
-    // On transition from ON -> OFF: send STOP once to all wheels and clear outputs
     if (prevEnabled) {
+      // Send STOP to all wheels exactly once on ON->OFF transition
       for (int i = 0; i < 4; ++i) {
         const object_id_t wid = rwIds_[i];
         if (wid == 0) continue;
@@ -174,90 +99,82 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
 
         CommandMessage stopCmd;
         ActionMessage::setCommand(&stopCmd,
-          static_cast<ActionId_t>(ReactionWheelsHandler::CMD_STOP),
-          store_address_t{});
+            static_cast<ActionId_t>(ReactionWheelsHandler::CMD_STOP),
+            store_address_t{});
         (void)MessageQueueSenderIF::sendMessage(dh->getCommandQueue(), &stopCmd, myQueue_->getId());
       }
-      // Reset diagnostic/output values so next TM is consistent
+
+      // Clear outputs and internal states for a clean restart
       tauDes_ = {0.f, 0.f, 0.f};
       tauWheelCmd_ = {0.f, 0.f, 0.f, 0.f};
       for (auto& v : gLastSentInt16) v = 0;
-
-      // Reset controller states
       gIstate[0]=gIstate[1]=gIstate[2]=0.f;
       gOmegaF[0]=gOmegaF[1]=gOmegaF[2]=0.f;
-      gStatesInit = false;
+      gInitStates = false;
     }
     prevEnabled = false;
-    return returnvalue::OK;  // do absolutely nothing if disabled
+    return returnvalue::OK; // do nothing when disabled
   }
 
-  // From here: controller is enabled
-  // On enable-edge, initialize filter state with current measurements to avoid a transient.
-  if (!prevEnabled || !gStatesInit) {
+  // Enabled path: initialize internal states once after enable
+  if (!prevEnabled || !gInitStates) {
     gIstate[0]=gIstate[1]=gIstate[2]=0.f;
     gOmegaF[0]=gOmegaF[1]=gOmegaF[2]=0.f;
-    gStatesInit = true;
+    gInitStates = true;
   }
   prevEnabled = true;
 
-  // 1) Read measured wheel torques from RW handler(s) [mNm]
+  // 1) Read measured wheel torques [mNm] from handlers for estimator input
   std::array<float, 4> tauW_meas = {0, 0, 0, 0};
   for (int i = 0; i < 4; ++i) {
     const object_id_t wid = rwIds_[i];
-    if (wid == 0) {
-      tauW_meas[i] = 0.0f;
-      continue;
-    }
+    if (wid == 0) continue;
     using PoolIds = ReactionWheelsHandler::PoolIds;
     LocalPoolVariable<int16_t> torqueVar(wid, static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm));
     if (torqueVar.read() == returnvalue::OK && torqueVar.isValid()) {
-      tauW_meas[i] = static_cast<float>(torqueVar.value);  // [mNm]
+      tauW_meas[i] = static_cast<float>(torqueVar.value); // device HK
     } else {
-      // Fallback: assume last commanded (best-effort if device HK not available)
-      tauW_meas[i] = tauWheelCmd_[i];
+      tauW_meas[i] = tauWheelCmd_[i]; // fallback to last command
     }
   }
 
-  // 2) Estimator step (wheel torque -> body rates/attitude); no external torques here
+  // 2) Estimator step: propagate true state and produce measured omega
   estimator_.step(tauW_meas, /*tauExt_mNm=*/std::array<float,3>{0.f,0.f,0.f});
+  const float* wMeas = estimator_.omegaMeas(); // [rad/s] to controller
+  const float* qTrue = estimator_.quatTrue();  // true attitude for logging
 
-  const float* wMeas = estimator_.omegaMeas(); // [rad/s]
-  const float* qTrue = estimator_.quatTrue();
-
-  // Initialize low-pass with first available measurement, once
+  // Initialize LPF once from first available measurement to avoid jump
   if (gOmegaF[0]==0.f && gOmegaF[1]==0.f && gOmegaF[2]==0.f) {
     gOmegaF[0]=wMeas[0]; gOmegaF[1]=wMeas[1]; gOmegaF[2]=wMeas[2];
   }
 
-  // 3) Guidance (update and get reference rate if any)
+  // 3) Guidance: get rate feed-forward (currently zeros)
   guidance_.update(dt);
   float wCmdFeed[3] = {0.0f, 0.0f, 0.0f};
-  guidance_.getRateCmd(wCmdFeed); // currently zeros
+  guidance_.getRateCmd(wCmdFeed);
 
-  // 4) Quaternion error qerr = qRef * conj(qTrue) (Hamilton product), ensure shortest path
+  // 4) Compute attitude error quaternion: qerr = qRef * conj(qTrue)
   auto qRef = guidance_.getTargetQuat();
   float qc[4];
   quatConj_(qTrue, qc);
   float qerr[4];
   quatMul_(qRef.data(), qc, qerr);
-  if (qerr[0] < 0.0f) {
-    for (int i = 0; i < 4; i++) qerr[i] = -qerr[i];
-  }
+  if (qerr[0] < 0.0f) for (int i=0;i<4;i++) qerr[i] = -qerr[i]; // shortest path
   qErr_ = {qerr[0], qerr[1], qerr[2], qerr[3]};
 
-  // --- Periodic attitude log (every ACS_LOG_ATT_DIV loops) ---
-  static uint32_t attLogCtr = 0;
-  if (++attLogCtr >= ACS_LOG_ATT_DIV) {
-    attLogCtr = 0;
+  // Periodic attitude log (every cfg_.debug.logEveryN loops)
+  static uint32_t attCtr = 0;
+  if (cfg_.debug.logEveryN > 0 && ++attCtr >= cfg_.debug.logEveryN) {
+    attCtr = 0;
 
-    // YPR for reference and true attitude (deg)
+    // Convert both to YPR for human-readable logs
     float yawR, pitchR, rollR, yawT, pitchT, rollT;
     quatToYpr(qRef.data(), yawR, pitchR, rollR);
     quatToYpr(qTrue,       yawT, pitchT, rollT);
+
     const float rad2deg = 180.0f / PI_F;
 
-    // Small-angle attitude error magnitude (deg), based on vector part of qerr
+    // Small-angle error magnitude from vector part (deg)
     const float evec[3] = {2.0f*qerr[1], 2.0f*qerr[2], 2.0f*qerr[3]};
     const float eNorm   = std::sqrt(evec[0]*evec[0] + evec[1]*evec[1] + evec[2]*evec[2]);
     const float angDeg  = 2.0f * std::asin(std::min(1.0f, 0.5f * eNorm)) * rad2deg;
@@ -269,68 +186,60 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
               << std::endl;
   }
 
-  // ===== Variant A: Attitude-P -> rate reference (per-axis clamp) =====
-  // Small-angle equivalent vector error: e = 2 * qerr_vec (dimension ~ rad for small angles)
-  const float e[3] = {2.0f * qerr[1], 2.0f * qerr[2], 2.0f * qerr[3]};
-
+  // 5) Outer loop: attitude P -> rate reference (per-axis clamp)
+  const float e[3] = {2.0f*qerr[1], 2.0f*qerr[2], 2.0f*qerr[3]};  // small-angle vector error
   float wRef[3] = {
-      ACS_KATT_X * e[0] + wCmdFeed[0],
-      ACS_KATT_Y * e[1] + wCmdFeed[1],
-      ACS_KATT_Z * e[2] + wCmdFeed[2]
+      cfg_.ctrl.outer.kAttX * e[0] + wCmdFeed[0],
+      cfg_.ctrl.outer.kAttY * e[1] + wCmdFeed[1],
+      cfg_.ctrl.outer.kAttZ * e[2] + wCmdFeed[2]
   };
-  // Clamp rate reference
-  if (wRef[0] >  ACS_WREF_MAX_X) wRef[0] =  ACS_WREF_MAX_X;
-  if (wRef[0] < -ACS_WREF_MAX_X) wRef[0] = -ACS_WREF_MAX_X;
-  if (wRef[1] >  ACS_WREF_MAX_Y) wRef[1] =  ACS_WREF_MAX_Y;
-  if (wRef[1] < -ACS_WREF_MAX_Y) wRef[1] = -ACS_WREF_MAX_Y;
-  if (wRef[2] >  ACS_WREF_MAX_Z) wRef[2] =  ACS_WREF_MAX_Z;
-  if (wRef[2] < -ACS_WREF_MAX_Z) wRef[2] = -ACS_WREF_MAX_Z;
+  wRef[0] = std::clamp(wRef[0], -cfg_.ctrl.outer.wRefMaxX, cfg_.ctrl.outer.wRefMaxX);
+  wRef[1] = std::clamp(wRef[1], -cfg_.ctrl.outer.wRefMaxY, cfg_.ctrl.outer.wRefMaxY);
+  wRef[2] = std::clamp(wRef[2], -cfg_.ctrl.outer.wRefMaxZ, cfg_.ctrl.outer.wRefMaxZ);
 
-  // ===== Low-pass filter on measured omega =====
-  if (ACS_OMEGA_LP_FC_HZ > 0.f) {
-    const float alpha = 1.0f - std::exp(-2.0f * PI_F * ACS_OMEGA_LP_FC_HZ * dt);
+  // 6) Low-pass filter on measured omega (optional)
+  if (cfg_.ctrl.inner.omegaLpFcHz > 0.f) {
+    const float alpha = 1.0f - std::exp(-2.0f * PI_F * cfg_.ctrl.inner.omegaLpFcHz * dt);
     gOmegaF[0] = gOmegaF[0] + alpha * (wMeas[0] - gOmegaF[0]);
     gOmegaF[1] = gOmegaF[1] + alpha * (wMeas[1] - gOmegaF[1]);
     gOmegaF[2] = gOmegaF[2] + alpha * (wMeas[2] - gOmegaF[2]);
   } else {
-    gOmegaF[0] = wMeas[0]; gOmegaF[1] = wMeas[1]; gOmegaF[2] = wMeas[2];
+    gOmegaF[0]=wMeas[0]; gOmegaF[1]=wMeas[1]; gOmegaF[2]=wMeas[2];
   }
 
-  // Rate error
-  const float er[3] = { wRef[0] - gOmegaF[0], wRef[1] - gOmegaF[1], wRef[2] - gOmegaF[2] };
+  // 7) Inner loop: per-axis PI with anti-windup back-calculation
+  const float er[3] = { wRef[0]-gOmegaF[0], wRef[1]-gOmegaF[1], wRef[2]-gOmegaF[2] };
 
-  // ===== Inner loop: per-axis PI with anti-windup back-calculation =====
-  const float Kpw[3] = {ACS_KPW_X, ACS_KPW_Y, ACS_KPW_Z};
-  const float Kiw[3] = {ACS_KIW_X, ACS_KIW_Y, ACS_KIW_Z};
-
-  // Unsaturated PI torque (pre-clamp), and clamped version for AW feedback
+  // Unsaturated PI output
   float tauUnsat[3] = {
-      Kpw[0] * er[0] + gIstate[0],
-      Kpw[1] * er[1] + gIstate[1],
-      Kpw[2] * er[2] + gIstate[2]
+    cfg_.ctrl.inner.KpwX * er[0] + gIstate[0],
+    cfg_.ctrl.inner.KpwY * er[1] + gIstate[1],
+    cfg_.ctrl.inner.KpwZ * er[2] + gIstate[2]
   };
-  float tauClamped[3] = {tauUnsat[0], tauUnsat[1], tauUnsat[2]};
-  const float tauMax = cfg_.limits.torqueMax_mNm;
-  clamp3_(tauClamped, tauMax);
 
-  // Anti-windup: back-calculation towards the clamped value
-  for (int i = 0; i < 3; ++i) {
-    const float aw = ACS_KAW * (tauClamped[i] - tauUnsat[i]); // drives i-state to respect clamp
-    gIstate[i] += (Kiw[i] * er[i] + aw) * dt;
+  // Apply torque clamp before rate limit (for anti-windup feedback)
+  float tauClamped[3] = {tauUnsat[0], tauUnsat[1], tauUnsat[2]};
+  clamp3_(tauClamped, cfg_.limits.torqueMax_mNm);
+
+  // Anti-windup: drive integrator so that tau follows the clamp
+  for (int i=0;i<3;i++) {
+    const float aw = cfg_.ctrl.inner.Kaw * (tauClamped[i] - tauUnsat[i]);
+    const float Ki = (i==0) ? cfg_.ctrl.inner.KiwX : (i==1) ? cfg_.ctrl.inner.KiwY : cfg_.ctrl.inner.KiwZ;
+    gIstate[i] += (Ki * er[i] + aw) * dt;
   }
 
-  // Use the clamped PI output as pre-rate-limit desired torque
+  // Pre-rate-limit desired torque
   float tauDes_pre[3] = {tauClamped[0], tauClamped[1], tauClamped[2]};
 
-  // Apply rate limit and final clamp per-axis
+  // 8) Per-axis torque rate limit and final clamp
   float tauDes[3] = {tauDes_pre[0], tauDes_pre[1], tauDes_pre[2]};
   const float prev[3] = {tauDes_[0], tauDes_[1], tauDes_[2]};
   rateLimit3_(tauDes, prev, cfg_.limits.torqueRateLimit_mNm_per_s, dt);
-  clamp3_(tauDes, tauMax);
+  clamp3_(tauDes, cfg_.limits.torqueMax_mNm);
   tauDes_ = {tauDes[0], tauDes[1], tauDes[2]};
 
-#if ACS_VERBOSE
-  {
+  // Optional verbose debug line each loop ------>>>USE #define!!!!!!!!!!
+  if (cfg_.debug.verbose) {
     const float eNorm = std::sqrt(e[0]*e[0] + e[1]*e[1] + e[2]*e[2]);
     const float angDeg = 2.0f * std::asin(std::min(1.0f, 0.5f * eNorm)) * 180.0f / PI_F;
     sif::info << std::fixed << std::setprecision(3)
@@ -340,49 +249,46 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
               << "er=["   << er[0] << "," << er[1] << "," << er[2] << "] rad/s, "
               << "tauPI_unsat=[" << tauUnsat[0] << "," << tauUnsat[1] << "," << tauUnsat[2] << "] mNm, "
               << "tauPI_sat=["   << tauClamped[0] << "," << tauClamped[1] << "," << tauClamped[2] << "] mNm, "
-              << "tauDes=["      << tauDes[0] << "," << tauDes[1] << "," << tauDes[2] << "] mNm"
+              << "tauDes=["      << tauDes_[0] << "," << tauDes_[1] << "," << tauDes_[2] << "] mNm"
               << std::endl;
   }
-#endif
 
-  // 6) Allocation: body torque -> wheel torques [mNm]
+  // 9) Allocation: body torque -> per-wheel torques [mNm]
   float tauW[4] = {0,0,0,0};
   allocator_.solve(tauDes, tauW);
 
-  // Extra safety clamp
-  for (int i = 0; i < 4; i++) {
-    if (tauW[i] > tauMax) tauW[i] = tauMax;
-    if (tauW[i] < -tauMax) tauW[i] = -tauMax;
-  }
-  tauWheelCmd_ = {tauW[0], tauW[1], tauW[2], tauW[3]};
-
-#if ACS_FORCE_TORQUE_ENABLE
-  {
-    // Force specific torques for bring-up (masked)
-    std::array<float, 4> forced{0.f, 0.f, 0.f, 0.f};
-    const float F = static_cast<float>(ACS_FORCE_TORQUE_MNM);
-    if (ACS_FORCE_TORQUE_WHEEL_MASK & 0x1) forced[0] = F;
-    if (ACS_FORCE_TORQUE_WHEEL_MASK & 0x2) forced[1] = F;
-    if (ACS_FORCE_TORQUE_WHEEL_MASK & 0x4) forced[2] = F;
-    if (ACS_FORCE_TORQUE_WHEEL_MASK & 0x8) forced[3] = F;
-    for (int i = 0; i < 4; ++i) {
-      if (forced[i] >  tauMax) forced[i] =  tauMax;
-      if (forced[i] < -tauMax) forced[i] = -tauMax;
+  // Optional bring-up: override with constant torques per mask
+  if (cfg_.force.enable) {
+    std::array<float,4> forced{0.f,0.f,0.f,0.f};
+    if (cfg_.force.wheelMask & 0x1) forced[0] = cfg_.force.torque_mNm;
+    if (cfg_.force.wheelMask & 0x2) forced[1] = cfg_.force.torque_mNm;
+    if (cfg_.force.wheelMask & 0x4) forced[2] = cfg_.force.torque_mNm;
+    if (cfg_.force.wheelMask & 0x8) forced[3] = cfg_.force.torque_mNm;
+    for (int i=0;i<4;i++) {
+      forced[i] = std::clamp(forced[i], -cfg_.limits.torqueMax_mNm, cfg_.limits.torqueMax_mNm);
     }
     tauWheelCmd_ = forced;
+  } else {
+    // Safety clamp (allocator already clamps, keep defensive)
+    for (int i=0;i<4;i++) {
+      tauW[i] = std::clamp(tauW[i], -cfg_.limits.torqueMax_mNm, cfg_.limits.torqueMax_mNm);
+    }
+    tauWheelCmd_ = {tauW[0], tauW[1], tauW[2], tauW[3]};
   }
-#endif
 
-  // 7) Send wheel torques with deadband & hysteresis
+  // 10) Send wheel torques with deadband and hysteresis to reduce bus traffic
   sendWheelTorques_(tauWheelCmd_);
 
   return returnvalue::OK;
 }
 
+// Build diagnostic snapshot for TM
 AcsDiagSnapshot AcsController::getDiag() const {
   AcsDiagSnapshot s;
   s.version = 1;
   s.enabled = enabled_.load();
+
+  // Attitudes and rates
   s.qRef = guidance_.getTargetQuat();
   const float* qt = estimator_.quatTrue();
   const float* wt = estimator_.omegaTrue();
@@ -391,11 +297,11 @@ AcsDiagSnapshot AcsController::getDiag() const {
   s.wTrue = {wt[0], wt[1], wt[2]};
   s.wMeas = {wm[0], wm[1], wm[2]};
 
-  // For TM compatibility: expose attitude P gains in Kp, and rate-P gains in Kd.
-  s.Kp = {ACS_KATT_X, ACS_KATT_Y, ACS_KATT_Z};
-  s.Kd = {ACS_KPW_X,  ACS_KPW_Y,  ACS_KPW_Z};
+  // Expose controller gains for ground visibility
+  s.Kp = {cfg_.ctrl.outer.kAttX, cfg_.ctrl.outer.kAttY, cfg_.ctrl.outer.kAttZ};
+  s.Kd = {cfg_.ctrl.inner.KpwX,  cfg_.ctrl.inner.KpwY,  cfg_.ctrl.inner.KpwZ};
 
-  // For disabled report zeros to keep TM consistent.
+  // Torques (report zeros when disabled)
   if (!s.enabled) {
     s.tauDes = {0.f, 0.f, 0.f};
     s.tauWheelCmd = {0.f, 0.f, 0.f, 0.f};
@@ -403,35 +309,26 @@ AcsDiagSnapshot AcsController::getDiag() const {
     s.tauDes = tauDes_;
     s.tauWheelCmd = tauWheelCmd_;
   }
+
   s.dtMs = dtMs_;
   return s;
 }
 
 // --- helpers ---
-
 void AcsController::quatConj_(const float q[4], float qc[4]) {
-  qc[0] = q[0];
-  qc[1] = -q[1];
-  qc[2] = -q[2];
-  qc[3] = -q[3];
+  qc[0] = q[0]; qc[1] = -q[1]; qc[2] = -q[2]; qc[3] = -q[3];
 }
-
 void AcsController::quatMul_(const float a[4], const float b[4], float out[4]) {
-  out[0] = a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3];
-  out[1] = a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2];
-  out[2] = a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1];
-  out[3] = a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0];
+  out[0] = a[0]*b[0] - a[1]*b[1] - a[2]*b[2] - a[3]*b[3];
+  out[1] = a[0]*b[1] + a[1]*b[0] + a[2]*b[3] - a[3]*b[2];
+  out[2] = a[0]*b[2] - a[1]*b[3] + a[2]*b[0] + a[3]*b[1];
+  out[3] = a[0]*b[3] + a[1]*b[2] - a[2]*b[1] + a[3]*b[0];
 }
-
 void AcsController::clamp3_(float v[3], float maxAbs) {
-  for (int i = 0; i < 3; i++) {
-    if (v[i] >  maxAbs) v[i] =  maxAbs;
-    if (v[i] < -maxAbs) v[i] = -maxAbs;
-  }
+  for (int i=0;i<3;i++) v[i] = std::clamp(v[i], -maxAbs, maxAbs);
 }
-
 void AcsController::rateLimit3_(float v[3], const float vPrev[3], float rateLimitPerSec, float dt) {
-  for (int i = 0; i < 3; i++) {
+  for (int i=0;i<3;i++) {
     const float dv = v[i] - vPrev[i];
     const float maxDv = rateLimitPerSec * dt;
     if (dv >  maxDv) v[i] = vPrev[i] + maxDv;
@@ -439,6 +336,8 @@ void AcsController::rateLimit3_(float v[3], const float vPrev[3], float rateLimi
   }
 }
 
+// Send torque commands to wheel handlers with small-value deadband and
+// "do not resend same value" hysteresis to reduce traffic.
 void AcsController::sendWheelTorques_(const std::array<float, 4>& tauWheel_mNm) {
   if (ipcStore_ == nullptr || myQueue_ == nullptr) {
     sif::warning << "ACS: sendWheelTorques_: no ipcStore or myQueue" << std::endl;
@@ -455,46 +354,45 @@ void AcsController::sendWheelTorques_(const std::array<float, 4>& tauWheel_mNm) 
       continue;
     }
 
-    // Clamp + convert float [mNm] -> int16 [mNm]
-    float tq = tauWheel_mNm[i];
-    const float LIM = cfg_.limits.torqueMax_mNm;
-    if (tq >  LIM) tq =  LIM;
-    if (tq < -LIM) tq = -LIM;
+    // Clamp to device limit (float)
+    float tq = std::clamp(tauWheel_mNm[i], -cfg_.limits.torqueMax_mNm, cfg_.limits.torqueMax_mNm);
 
-    // Deadband: below threshold, send one-time zero if last != 0; else skip
-    if (std::fabs(tq) < ACS_MIN_CMD_ABS_MNM) {
+    // Deadband: if tiny torque and last sent was non-zero, send one-time zero
+    if (std::fabs(tq) < cfg_.hygiene.minCmdAbs_mNm) {
       if (gLastSentInt16[i] != 0) {
         store_address_t storeId{};
-        const uint8_t payloadZero[2] = {0, 0};
+        const uint8_t payloadZero[2] = {0, 0}; // big-endian int16(0)
         if (ipcStore_->addData(&storeId, payloadZero, sizeof(payloadZero)) == returnvalue::OK) {
           CommandMessage cmd;
           ActionMessage::setCommand(&cmd,
-            static_cast<ActionId_t>(ReactionWheelsHandler::CMD_SET_TORQUE),
-            storeId);
+              static_cast<ActionId_t>(ReactionWheelsHandler::CMD_SET_TORQUE),
+              storeId);
           (void)MessageQueueSenderIF::sendMessage(dh->getCommandQueue(), &cmd, myQueue_->getId());
-          gLastSentInt16[i] = 0;
+          gLastSentInt16[i] = 0; // remember last sent value
         }
       }
-      continue;
+      continue; // skip sending a small non-zero torque
     }
 
+    // Quantize to int16 mNm
     int32_t rounded = static_cast<int32_t>(std::lround(tq));
     if (rounded > std::numeric_limits<int16_t>::max()) rounded = std::numeric_limits<int16_t>::max();
     if (rounded < std::numeric_limits<int16_t>::min()) rounded = std::numeric_limits<int16_t>::min();
     const int16_t torque_mNm = static_cast<int16_t>(rounded);
 
-    // Hysteresis: do not re-send identical values
+    // Hysteresis: do not resend identical values
     if (torque_mNm == gLastSentInt16[i]) {
-      continue; // nothing new
+      continue;
     }
 
+    // Pack big-endian and send as Action command
     store_address_t storeId{};
     const uint8_t payload[2] = {
       static_cast<uint8_t>((torque_mNm >> 8) & 0xFF),
       static_cast<uint8_t>( torque_mNm       & 0xFF)
     };
     if (ipcStore_->addData(&storeId, payload, sizeof(payload)) != returnvalue::OK) {
-      continue;
+      continue; // store full; skip this cycle
     }
 
     CommandMessage cmd;
@@ -502,9 +400,8 @@ void AcsController::sendWheelTorques_(const std::array<float, 4>& tauWheel_mNm) 
         static_cast<ActionId_t>(ReactionWheelsHandler::CMD_SET_TORQUE),
         storeId);
 
-    const auto mq = dh->getCommandQueue();
-    if (MessageQueueSenderIF::sendMessage(mq, &cmd, myQueue_->getId()) == returnvalue::OK) {
-      gLastSentInt16[i] = torque_mNm;
+    if (MessageQueueSenderIF::sendMessage(dh->getCommandQueue(), &cmd, myQueue_->getId()) == returnvalue::OK) {
+      gLastSentInt16[i] = torque_mNm; // update last-sent on success
     }
   }
 }
