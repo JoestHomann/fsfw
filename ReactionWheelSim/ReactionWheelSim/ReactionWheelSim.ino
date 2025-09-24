@@ -39,7 +39,7 @@ constexpr float RAD2RPM = 60.0f / (2.0f * PI_F);
 
 // Physical model
 const float   J_rw       = 0.001f;   // [kg m^2] wheel inertia
-const int16_t TQ_MAX_mNm = 5;        // [mNm] command clamp (match FSFW clamp ±5 mNm)
+const int16_t TQ_MAX_mNm = 5;        // [mNm] command clamp (match FSFW clamp +-5 mNm)
 const float   TQ_MAX_Nm  = TQ_MAX_mNm / 1000.0f;     // [N·m]
 const float   alpha_max  = TQ_MAX_Nm / J_rw;         // [rad/s^2] -> 5.0 with values above
 const float   dt         = 0.01f;    // [s] integrator step (10 ms)

@@ -16,7 +16,6 @@ void RwAllocator::solve(const float tauDes[3], float tauWheel[4]) const {
   tauWheel[1] = 0.0f;
   tauWheel[2] = 0.0f;
   tauWheel[3] = 0.0f;
-  // Clamp to per-wheel limit
   const float lim = cfg_.limits.torqueMax_mNm;
   for (int i = 0; i < 4; ++i) {
     tauWheel[i] = std::clamp(tauWheel[i], -lim, lim);
@@ -24,7 +23,7 @@ void RwAllocator::solve(const float tauDes[3], float tauWheel[4]) const {
   return;
 #endif
 
-  // Body torque to realize (sign convention: wheel torque acts opposite on body)
+  // Body torque to realize (convention: wheel torque acts opposite on body)
   const float y[3] = {-tauDes[0], -tauDes[1], -tauDes[2]};
 
   // Compute M = B * B^T (3x3)
@@ -63,12 +62,12 @@ void RwAllocator::solve(const float tauDes[3], float tauWheel[4]) const {
     Minv[7] = -(M[0]*M[7]-M[1]*M[6]) * invDet;
     Minv[8] =  (M[0]*M[4]-M[1]*M[3]) * invDet;
 
-    // v = Minv * y  (3x1)
+    // v = Minv * y
     const float vx = Minv[0]*y[0] + Minv[1]*y[1] + Minv[2]*y[2];
     const float vy = Minv[3]*y[0] + Minv[4]*y[1] + Minv[5]*y[2];
     const float vz = Minv[6]*y[0] + Minv[7]*y[1] + Minv[8]*y[2];
 
-    // tauWheel = B^T * v  (4x3 * 3x1)
+    // tauWheel = B^T * v
     for (int i = 0; i < 4; ++i) {
       const float bx = B_[0 + 3*i], by = B_[1 + 3*i], bz = B_[2 + 3*i];
       tauWheel[i] = bx*vx + by*vy + bz*vz;

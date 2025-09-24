@@ -67,13 +67,13 @@ void Estimator::step(const std::array<float,4>& tauW_mNm, const std::array<float
   for (int i = 0; i < 4; ++i) q_[i] += Ts * dq[i];
   quatNormalize_(q_);
 
-  // Gyro measurement model: white + bias random walk + optional BLWN shaping
+  // Gyro measurement model – with GyroNoise=0 this reduces to omegaMeas=omegaTrue.
   const float d2r  = PI_F / 180.0f;
   const float sigG = (cfg_.gyro.sigmaG_dps_sqrtHz * d2r) * std::sqrt(1.0f / Ts);
   const float sigB = (cfg_.gyro.sigmaB_dps_sqrtHz * d2r) * std::sqrt(Ts);
 
   for (int i = 0; i < 3; ++i) {
-    bias_[i]  += sigB * normalRand_();
+    bias_[i] += sigB * normalRand_();
   }
 
   float meas[3] = {
@@ -85,7 +85,7 @@ void Estimator::step(const std::array<float,4>& tauW_mNm, const std::array<float
   if (cfg_.gyro.fc_blwn_hz > 0.0f) {
     const float alpha = 1.0f - std::exp(-2.0f * PI_F * cfg_.gyro.fc_blwn_hz * Ts);
     for (int i = 0; i < 3; ++i) {
-      blwn_[i]     = blwn_[i] + alpha * (meas[i] - blwn_[i]);
+      blwn_[i]      = blwn_[i] + alpha * (meas[i] - blwn_[i]);
       omegaMeas_[i] = blwn_[i];
     }
   } else {
@@ -96,10 +96,10 @@ void Estimator::step(const std::array<float,4>& tauW_mNm, const std::array<float
 void Estimator::reset(const float q_init[4], const float w_init[3]) {
   for (int i = 0; i < 4; ++i) q_[i] = q_init[i];
   for (int i = 0; i < 3; ++i) {
-    omega_[i]    = w_init[i];
-    bias_[i]     = 0.0f;
-    blwn_[i]     = 0.0f;
-    omegaMeas_[i]= w_init[i];
+    omega_[i]     = w_init[i];
+    bias_[i]      = 0.0f;
+    blwn_[i]      = 0.0f;
+    omegaMeas_[i] = w_init[i];
   }
   quatNormalize_(q_);
 }
