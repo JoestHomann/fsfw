@@ -107,7 +107,7 @@ void InitMission::createTasks() {
   currPrio = 50;
 #endif
   FixedTimeslotTaskIF* timeslotDemoTask = taskFactory->createFixedTimeslotTask(
-      "PST_TASK", currPrio, PeriodicTaskIF::MINIMUM_STACK_SIZE, 0.5, deadlineMissedFunc);
+      "PST_TASK", currPrio, PeriodicTaskIF::MINIMUM_STACK_SIZE, 2.0, deadlineMissedFunc);
   result = pst::pollingSequenceExamples(timeslotDemoTask);
   if (result != returnvalue::OK) {
 #if FSFW_CPP_OSTREAM_ENABLED == 1

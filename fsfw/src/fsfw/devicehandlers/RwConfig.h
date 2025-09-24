@@ -11,9 +11,9 @@ constexpr uint32_t DELAY_OFF_TO_ON_MS    = 100;
 constexpr uint32_t DELAY_ON_TO_NORMAL_MS = 100;
 
 // ----- Polling / Timeouts ---------------------------------------------------
-constexpr uint32_t STATUS_POLL_DIVIDER_DEFAULT = 1; // PST cycles between periodic STATUS polls
+constexpr uint32_t STATUS_POLL_DIVIDER_DEFAULT = 2; // PST cycles between periodic STATUS polls
 constexpr uint8_t  STATUS_TIMEOUT_CYCLES       = 4;   // cycles until timeout after a poll
-constexpr uint32_t STATUS_LOG_EVERY = 20; // log every 20th STATUS frame
+constexpr uint32_t STATUS_LOG_EVERY = 12; // log every nth STATUS frame
 
 // ----- RX Ring Buffer -------------------------------------------------------
 constexpr std::size_t RX_RING_SIZE   = 256;
@@ -24,7 +24,7 @@ constexpr int16_t  MAX_RPM_DEFAULT         = 4000; // clamp SET_SPEED (absolute 
 constexpr uint16_t MAX_SLEW_RPM_S_DEFAULT  = 0;    // 0 = disabled (no slew limiting)
 
 // Clamp for torque command (absolute, in mNm)
-constexpr int16_t  MAX_TORQUE_MNM_DEFAULT  = 500; // adjust to your wheel capability
+constexpr int16_t  MAX_TORQUE_MNM_DEFAULT  = 5; // adjust to your wheel capability
 
 // ----- FDIR Thresholds ------------------------------------------------------
 constexpr int16_t STUCK_RPM_THRESH       = 50;   // running == 0 but |rpm| > threshold

@@ -65,8 +65,8 @@ class AcsController : public SystemObject, public ExecutableObjectIF {
   Guidance    guidance_;
   RwAllocator allocator_;
 
-  std::array<float,3> Kp_ = {200.0f, 0.0f, 0.0f};
-  std::array<float,3> Kd_ = { 40.0f,  0.0f,  0.0f};
+  std::array<float,3> Kp_ = {2.0f, 2.0f, 2.0f};
+  std::array<float,3> Kd_ = { 0.5f,  0.5f,  0.5f};
   std::array<float,3> tauDes_{ {0,0,0} };
   std::array<float,4> tauWheelCmd_{ {0,0,0,0} };
   std::array<float,4> qErr_{ {1,0,0,0} };
@@ -86,6 +86,17 @@ class AcsController : public SystemObject, public ExecutableObjectIF {
   void sendWheelTorques_(const std::array<float,4>& tauWheel_mNm);
 };
 
+// ---- Debug / tuning macros ----
 #ifndef ACS_VERBOSE
-#define ACS_VERBOSE 1
+#define ACS_VERBOSE 0
+#endif
+
+#ifndef ACS_DEBUG_EVERY
+// Wie oft Debugzeilen gedruckt werden (alle N Zyklen)
+#define ACS_DEBUG_EVERY 10
+#endif
+
+#ifndef ACS_TORQUE_MIN_CMD_MNM
+// Mindest-Befehl pro Rad in mNm vor der Rundung auf int16 (0 => deaktiviert)
+#define ACS_TORQUE_MIN_CMD_MNM 1.0f
 #endif

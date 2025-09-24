@@ -7,15 +7,38 @@
 #include "fsfw/datapoollocal/LocalPoolVariable.h"
 // Objects IDs (contains IPC_STORE)
 #include "commonObjects.h"
-// Our RW handler header for command IDs + Pool IDs
+// Device handler messaging
 #include "fsfw/devicehandlers/DeviceHandlerMessage.h"
 #include "fsfw/devicehandlers/ReactionWheelsHandler.h"
 #include "fsfw/devicehandlers/RwProtocol.h"
 #include "fsfw/ipc/CommandMessage.h"
+#include "fsfw/ipc/MessageQueueSenderIF.h"
+#include "fsfw/serviceinterface/ServiceInterfaceStream.h"
+#include "fsfw/action/ActionMessage.h"
 
 namespace {
 constexpr float PI_F = 3.14159265358979323846f;
+
+// Merker der zuletzt gesendeten int16-Torques je Rad (für Anti-Spam/Deadband)
+int16_t gLastSentInt16[4] = {0, 0, 0, 0};
 }
+
+// ========================= DEBUG / FORCE TORQUE SWITCHES =========================
+#ifndef ACS_FORCE_TORQUE_ENABLE
+#define ACS_FORCE_TORQUE_ENABLE 0
+#endif
+#ifndef ACS_FORCE_TORQUE_MNM
+#define ACS_FORCE_TORQUE_MNM 0  // mNm
+#endif
+#ifndef ACS_FORCE_TORQUE_WHEEL_MASK
+#define ACS_FORCE_TORQUE_WHEEL_MASK 0x1 // Bit0..Bit3 für RW0..RW3
+#endif
+// ================================================================================
+
+// ==== Verkehrsreduktion / Hygiene ====
+#ifndef ACS_MIN_CMD_ABS_MNM
+#define ACS_MIN_CMD_ABS_MNM 0.05f
+#endif
 
 AcsController::AcsController(object_id_t objectId, std::array<object_id_t, 4> wheelIds,
                              const acs::Config& cfg)
@@ -29,9 +52,7 @@ AcsController::AcsController(object_id_t objectId, std::array<object_id_t, 4> wh
   allocator_.setAxes(cfg_.Bcols);
   dtMs_ = cfg_.timing.dtMs;
 
-  // Create own small message queue (depth 3)
   myQueue_ = QueueFactory::instance()->createMessageQueue(3);
-  // Get IPC store to pass payloads to device handlers
   ipcStore_ = ObjectManager::instance()->get<StorageManagerIF>(objects::IPC_STORE);
   if (ipcStore_ == nullptr) {
     sif::error << "ACS: IPC store not available!" << std::endl;
@@ -41,6 +62,37 @@ AcsController::AcsController(object_id_t objectId, std::array<object_id_t, 4> wh
 ReturnValue_t AcsController::performOperation(uint8_t) {
   const float dt = cfg_.timing.dt();
 
+  // --- Kante erkennen: enabled (an/aus) ---
+  const bool enabledNow = enabled_.load();
+  static bool prevEnabled = false;
+
+  if (!enabledNow) {
+    // Beim Übergang von an -> aus: einmalig STOP an alle Räder + Outputs nullen
+    if (prevEnabled) {
+      for (int i = 0; i < 4; ++i) {
+        const object_id_t wid = rwIds_[i];
+        if (wid == 0) continue;
+        auto* dh = ObjectManager::instance()->get<DeviceHandlerIF>(wid);
+        if (dh == nullptr) continue;
+
+        CommandMessage stopCmd;
+        ActionMessage::setCommand(&stopCmd,
+          static_cast<ActionId_t>(ReactionWheelsHandler::CMD_STOP),
+          store_address_t{});
+        (void)MessageQueueSenderIF::sendMessage(dh->getCommandQueue(), &stopCmd, myQueue_->getId());
+      }
+      // Diagnose-/Output-Werte zurücksetzen, damit nächste TM konsistent ist
+      tauDes_ = {0.f, 0.f, 0.f};
+      tauWheelCmd_ = {0.f, 0.f, 0.f, 0.f};
+      for (auto& v : gLastSentInt16) v = 0;
+    }
+    prevEnabled = false;
+    return returnvalue::OK;  // absolut nichts rechnen/senden, wenn aus!
+  }
+
+  // Ab hier: Controller ist an
+  prevEnabled = true;
+
   // 1) Read measured torques from RW handler(s)
   std::array<float, 4> tauW_meas = {0, 0, 0, 0};
   for (int i = 0; i < 4; ++i) {
@@ -49,18 +101,12 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
       tauW_meas[i] = 0.0f;
       continue;
     }
-
     using PoolIds = ReactionWheelsHandler::PoolIds;
-    // Read HK torque as int16_t (mNm), remote read-only (no commit)
     LocalPoolVariable<int16_t> torqueVar(wid, static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm));
     if (torqueVar.read() == returnvalue::OK && torqueVar.isValid()) {
       tauW_meas[i] = static_cast<float>(torqueVar.value);  // [mNm]
     } else {
-      // Fallback until HK valid: use last commanded
       tauW_meas[i] = tauWheelCmd_[i];
-#ifdef ACS_VERBOSE
-      sif::warning << "ACS: RW" << i << " HK torque invalid -> fallback to commanded." << std::endl;
-#endif
     }
   }
 
@@ -87,9 +133,12 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
 
   // 5) PD control
   float e[3] = {2.0f * qerr[1], 2.0f * qerr[2], 2.0f * qerr[3]};
-  float tauDes[3] = {Kp_[0] * e[0] + Kd_[0] * (wRef[0] - wMeas[0]),
-                     Kp_[1] * e[1] + Kd_[1] * (wRef[1] - wMeas[1]),
-                     Kp_[2] * e[2] + Kd_[2] * (wRef[2] - wMeas[2])};
+  float tauDes_pre[3] = {
+      Kp_[0] * e[0] + Kd_[0] * (wRef[0] - wMeas[0]),
+      Kp_[1] * e[1] + Kd_[1] * (wRef[1] - wMeas[1]),
+      Kp_[2] * e[2] + Kd_[2] * (wRef[2] - wMeas[2])
+  };
+  float tauDes[3] = {tauDes_pre[0], tauDes_pre[1], tauDes_pre[2]};
   float prev[3] = {tauDes_[0], tauDes_[1], tauDes_[2]};
   rateLimit3_(tauDes, prev, cfg_.limits.torqueRateLimit_mNm_per_s, dt);
   clamp3_(tauDes, cfg_.limits.torqueMax_mNm);
@@ -104,11 +153,24 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
   }
   tauWheelCmd_ = {tauW[0], tauW[1], tauW[2], tauW[3]};
 
-  // 7) Send to RW(s) if enabled
-  if (enabled_.load()) {
-    sendWheelTorques_(tauWheelCmd_);
+#if ACS_FORCE_TORQUE_ENABLE
+  {
+    std::array<float, 4> forced{0.f, 0.f, 0.f, 0.f};
+    const float F = static_cast<float>(ACS_FORCE_TORQUE_MNM);
+    if (ACS_FORCE_TORQUE_WHEEL_MASK & 0x1) forced[0] = F;
+    if (ACS_FORCE_TORQUE_WHEEL_MASK & 0x2) forced[1] = F;
+    if (ACS_FORCE_TORQUE_WHEEL_MASK & 0x4) forced[2] = F;
+    if (ACS_FORCE_TORQUE_WHEEL_MASK & 0x8) forced[3] = F;
+    for (int i = 0; i < 4; ++i) {
+      if (forced[i] > cfg_.limits.torqueMax_mNm) forced[i] = cfg_.limits.torqueMax_mNm;
+      if (forced[i] < -cfg_.limits.torqueMax_mNm) forced[i] = -cfg_.limits.torqueMax_mNm;
+    }
+    tauWheelCmd_ = forced;
   }
+#endif
 
+  // 7) Senden (mit Deadband/Zero-Spam)
+  sendWheelTorques_(tauWheelCmd_);
   return returnvalue::OK;
 }
 
@@ -125,8 +187,15 @@ AcsDiagSnapshot AcsController::getDiag() const {
   s.wMeas = {wm[0], wm[1], wm[2]};
   s.Kp = Kp_;
   s.Kd = Kd_;
-  s.tauDes = tauDes_;
-  s.tauWheelCmd = tauWheelCmd_;
+
+  // Bei disabled immer 0 reporten, um TM konsistent zu halten.
+  if (!s.enabled) {
+    s.tauDes = {0.f, 0.f, 0.f};
+    s.tauWheelCmd = {0.f, 0.f, 0.f, 0.f};
+  } else {
+    s.tauDes = tauDes_;
+    s.tauWheelCmd = tauWheelCmd_;
+  }
   s.dtMs = dtMs_;
   return s;
 }
@@ -165,63 +234,69 @@ void AcsController::rateLimit3_(float v[3], const float vPrev[3], float rateLimi
 
 void AcsController::sendWheelTorques_(const std::array<float, 4>& tauWheel_mNm) {
   if (ipcStore_ == nullptr || myQueue_ == nullptr) {
+    sif::warning << "ACS: sendWheelTorques_: no ipcStore or myQueue" << std::endl;
     return;
   }
 
   for (int i = 0; i < 4; i++) {
     const object_id_t wid = rwIds_[i];
-    if (wid == 0) {
-      continue;
-    }
+    if (wid == 0) continue;
 
-    // Resolve device handler and its command queue
     auto* dh = ObjectManager::instance()->get<DeviceHandlerIF>(wid);
     if (dh == nullptr) {
-#ifdef ACS_VERBOSE
-      sif::warning << "ACS: RW device 0x" << std::hex << wid << std::dec << " not found."
-                   << std::endl;
-#endif
+      sif::warning << "ACS: RW device 0x" << std::hex << wid << std::dec << " not found." << std::endl;
       continue;
     }
 
-    // Per-wheel safety clamp (in mNm) before converting to int16
+    // Clamp + Umrechnung float mNm -> int16 mNm
     float tq = tauWheel_mNm[i];
     const float LIM = cfg_.limits.torqueMax_mNm;
-    if (tq > LIM) tq = LIM;
+    if (tq >  LIM) tq =  LIM;
     if (tq < -LIM) tq = -LIM;
 
-    // Convert float mNm -> int16 mNm (rounded) and guard against overflow
+    // Deadband: unterhalb Schwellwert, nur einmalig 0 senden (wenn vorher != 0)
+    if (std::fabs(tq) < ACS_MIN_CMD_ABS_MNM) {
+      if (gLastSentInt16[i] != 0) {
+        store_address_t storeId{};
+        const uint8_t payloadZero[2] = {0, 0};
+        if (ipcStore_->addData(&storeId, payloadZero, sizeof(payloadZero)) == returnvalue::OK) {
+          CommandMessage cmd;
+          ActionMessage::setCommand(&cmd,
+            static_cast<ActionId_t>(ReactionWheelsHandler::CMD_SET_TORQUE),
+            /* FIX: richtig ist store_address_t */ storeId);
+          (void)MessageQueueSenderIF::sendMessage(dh->getCommandQueue(), &cmd, myQueue_->getId());
+          gLastSentInt16[i] = 0;
+        }
+      }
+      continue;
+    }
+
     int32_t rounded = static_cast<int32_t>(std::lround(tq));
-    if (rounded > std::numeric_limits<int16_t>::max())
-      rounded = std::numeric_limits<int16_t>::max();
-    if (rounded < std::numeric_limits<int16_t>::min())
-      rounded = std::numeric_limits<int16_t>::min();
+    if (rounded > std::numeric_limits<int16_t>::max()) rounded = std::numeric_limits<int16_t>::max();
+    if (rounded < std::numeric_limits<int16_t>::min()) rounded = std::numeric_limits<int16_t>::min();
     const int16_t torque_mNm = static_cast<int16_t>(rounded);
 
-    // Build wire frame for this wheel (RAW command)
-    uint8_t frame[RwProtocol::CMD_LEN] = {};
-    const size_t total = RwProtocol::buildSetTorque(frame, sizeof(frame), torque_mNm);
-    if (total == 0) {
-#ifdef ACS_VERBOSE
-      sif::warning << "ACS: RwProtocol::buildSetTorque failed for idx " << i << std::endl;
-#endif
-      continue;
+    if (torque_mNm == gLastSentInt16[i]) {
+      continue; // nichts Neues
     }
 
-    // Put frame into IPC store
     store_address_t storeId{};
-    const ReturnValue_t res = ipcStore_->addData(&storeId, frame, total);
-    if (res != returnvalue::OK) {
-#ifdef ACS_VERBOSE
-      sif::warning << "ACS: IPC store addData failed, skipping RAW torque cmd for RW idx " << i
-                   << std::endl;
-#endif
+    const uint8_t payload[2] = {
+      static_cast<uint8_t>((torque_mNm >> 8) & 0xFF),
+      static_cast<uint8_t>( torque_mNm       & 0xFF)
+    };
+    if (ipcStore_->addData(&storeId, payload, sizeof(payload)) != returnvalue::OK) {
       continue;
     }
 
-    // Send RAW command to device handler
     CommandMessage cmd;
-    DeviceHandlerMessage::setDeviceHandlerRawCommandMessage(&cmd, storeId);
-    MessageQueueSenderIF::sendMessage(dh->getCommandQueue(), &cmd, myQueue_->getId());
+    ActionMessage::setCommand(&cmd,
+        static_cast<ActionId_t>(ReactionWheelsHandler::CMD_SET_TORQUE),
+        storeId);
+
+    const auto mq = dh->getCommandQueue();
+    if (MessageQueueSenderIF::sendMessage(mq, &cmd, myQueue_->getId()) == returnvalue::OK) {
+      gLastSentInt16[i] = torque_mNm;
+    }
   }
 }

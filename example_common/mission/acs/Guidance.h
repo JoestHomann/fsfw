@@ -3,8 +3,7 @@
 #include <array>
 
 /**
- * Holds the target attitude for "hold" mode.
- * Outputs zero rate command for now (extend to slews later).
+ * Holds the target attitude 
  */
 class Guidance {
  public:

@@ -103,7 +103,7 @@ void ObjectFactory::produce(void* args) {
 
   auto* rwCookie = new SerialCookie(objects::RW_HANDLER,
                                     "/dev/ttyACM0",  // ggf. anpassen
-                                    UartBaudRate::RATE_9600, 1024, UartModes::NON_CANONICAL);
+                                    UartBaudRate::RATE_115200, 1024, UartModes::NON_CANONICAL);
 
   rwCookie->setReadCycles(5);       // allow up to 5 read() attempts per GET_READ phase
   rwCookie->setToFlushInput(true);  // optional: flush stale bytes after opening port

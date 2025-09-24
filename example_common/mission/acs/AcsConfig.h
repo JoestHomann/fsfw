@@ -1,4 +1,3 @@
-// example_common/mission/acs/AcsConfig.h
 #pragma once
 
 #include <array>
@@ -27,14 +26,14 @@ struct GyroNoise {
 
 struct Limits {
   // Max per-axis body torque magnitude [mNm]
-  float torqueMax_mNm{20.0f};
-  // Max torque rate (per axis) [mNm/s]
-  float torqueRateLimit_mNm_per_s{200.0f};
+  float torqueMax_mNm{5.0f};
+  // Max torque rate (per axis) [mNm/s] – applied in controller, not here
+  float torqueRateLimit_mNm_per_s{5.0f}; // 1.0 mNm per 200 ms step @ 5 Hz
 };
 
 struct Timing {
   // Controller step in milliseconds; used for scheduling and discretization
-  uint32_t dtMs{100};
+  uint32_t dtMs{200};
   constexpr float dt() const { return 1e-3f * static_cast<float>(dtMs); }
 };
 
@@ -42,25 +41,30 @@ struct Timing {
 using Axes3x4 = std::array<float, 12>;
 
 struct Config {
-  Timing   timing{};
+  Timing     timing{};
   InertiaDiag inertia{};
-  Axes3x4  Bcols{};
-  Limits   limits{};
-  GyroNoise gyro{};
+  Axes3x4    Bcols{};
+  Limits     limits{};
+  GyroNoise  gyro{};
 };
 
 // Default config values – adjust in your mission code if needed.
 inline constexpr Config DEFAULT{
-    /* timing  */ Timing{100},
-    /* inertia */ InertiaDiag{8.0f, 8.0f, 9.0f},
-    /* Bcols   */ Axes3x4{{
-        1.0f, 0.0f, 0.0f,   // b1
-        0.0f, 1.0f, 0.0f,   // b2
-        0.0f, 0.0f, 1.0f,   // b3
-        0.57735f, 0.57735f, 0.57735f          // b4
+    /* timing  */ Timing{200},                         // 5 Hz controller step
+    /* inertia */ InertiaDiag{0.8f, 0.8f, 0.8f},       // example inertia (tune to your platform)
+    /* Bcols   */
+    // Column-major: [b1.x, b1.y, b1.z,  b2.x, b2.y, b2.z,  b3.x, b3.y, b3.z,  b4.x, b4.y, b4.z]
+    // For debugging: make wheels 1..3 align with body axes x,y,z; wheel 4 disabled.
+    /* clang-format off */
+    Axes3x4{{
+      1.0f, 0.0f, 0.0f,   // b1 -> +X
+      0.0f, 1.0f, 0.0f,   // b2 -> +Y
+      0.0f, 0.0f, 1.0f,   // b3 -> +Z
+      0.0f, 0.0f, 0.0f    // b4 -> unused (set later to real axis or keep zero)
     }},
-    /* limits  */ Limits{500.0f, 8000.0f},
-    /* gyro    */ GyroNoise{0.03f, 5e-4f, 25.0f}
+    /* clang-format on */
+    /* limits  */ Limits{5.0f, 5.0f},                  // +-5 mNm, 1 mNm/step @ 5 Hz
+    /* gyro    */ GyroNoise{0.0f, 0.0f, 0.0f}
 };
 
 } // namespace acs
