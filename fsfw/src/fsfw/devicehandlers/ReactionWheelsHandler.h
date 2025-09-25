@@ -44,11 +44,14 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
     HK_TORQUE_mNm = 3,
     HK_RUNNING = 4,
     HK_FLAGS = 5,
-    // 6 reserved (HK_ERROR removed)
-    HK_CRC_ERR_CNT = 7,
-    HK_MALFORMED_CNT = 8,
-    HK_TIMESTAMP_MS = 9
+    HK_CRC_ERR_CNT = 6,
+    HK_MALFORMED_CNT = 7,
+    HK_TIMESTAMP_MS = 8
   };
+
+  // --- HK flag bits --------------------------------
+  static constexpr uint16_t FLAG_STUCK       = 0x0001;  // running==0 and |speed| above threshold
+  static constexpr uint16_t FLAG_TORQUE_HIGH = 0x0002;  // |torque| above threshold
 
   // Dataset IDs
   static constexpr uint32_t DATASET_ID_RAW = 0xCA;
@@ -132,9 +135,15 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   ReturnValue_t drainRxIntoRing();  // pull available bytes into ring
   void reportProtocolIssuesInWindow(const uint8_t* buf, size_t n);  // count CRC/malformed
 
-  // ---------------- Error bookkeeping ---------------------------------------
+  // ---------------- Error handling ---------------------------------------
   void handleCrcError();   // Handle CRC error: Count and trigger event
   void handleMalformed();  // Handle malformed: Count and trigger event
+
+  // ---------------- Error counters ------------------------------------------
+  uint32_t crcErrCnt{0};     // CRC error counter
+  uint32_t malformedCnt{0};  // malformed frame counter
+  static constexpr uint32_t CRC_ERR_EVENT_THRESH = RwConfig::CRC_ERR_EVENT_THRESH;
+  static constexpr uint32_t MALFORMED_EVENT_THRESH = RwConfig::MALFORMED_EVENT_THRESH;
 
   // ---------------- TX buffer ------------------------------------------------
   uint8_t txBuf[RwProtocol::CMD_LEN] = {};  // last command frame to send
@@ -160,23 +169,14 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   // ---------------- Runtime parameters --------------------------------------
   int16_t p_maxRpm{RwConfig::MAX_RPM_DEFAULT};  // limit for SET_SPEED
 
-  // ---------------- Simple FDIR thresholds / debounce -----------------------
-  static constexpr int16_t STUCK_RPM_THRESH =
-      RwConfig::STUCK_RPM_THRESH;  // speed threshold for stuck check
+  // ---------------- FDIR thresholds / counts --------------------------------
+  static constexpr int16_t STUCK_RPM_THRESH = RwConfig::STUCK_RPM_THRESH;  // speed threshold for stuck check
   static constexpr uint8_t STUCK_RPM_COUNT = RwConfig::STUCK_RPM_COUNT;  // count for stuck check
-  static constexpr int16_t HIGH_TORQUE_THRESH =
-      RwConfig::HIGH_TORQUE_THRESH;  // torque safety threshold
-  static constexpr uint8_t HIGH_TORQUE_COUNT =
-      RwConfig::HIGH_TORQUE_COUNT;  // count for torque safety
+  static constexpr int16_t HIGH_TORQUE_THRESH = RwConfig::HIGH_TORQUE_THRESH;  // torque safety threshold
+  static constexpr uint8_t HIGH_TORQUE_COUNT = RwConfig::HIGH_TORQUE_COUNT;  // count for torque safety
 
   uint8_t stuckRpmCnt{0};    // Counter for stuck detection
   uint8_t highTorqueCnt{0};  // Counter for high torque
-
-  // ---------------- Error counters ------------------------------------------
-  uint32_t crcErrCnt{0};     // CRC error counter
-  uint32_t malformedCnt{0};  // malformed frame counter
-  static constexpr uint32_t CRC_ERR_EVENT_THRESH = RwConfig::CRC_ERR_EVENT_THRESH;
-  static constexpr uint32_t MALFORMED_EVENT_THRESH = RwConfig::MALFORMED_EVENT_THRESH;
 
   // ---------------- RX ring buffer ------------------------------------------
   static constexpr std::size_t RX_RING_SIZE = RwConfig::RX_RING_SIZE;  // bytes in ring

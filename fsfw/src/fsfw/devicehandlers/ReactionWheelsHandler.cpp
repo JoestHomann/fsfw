@@ -59,7 +59,7 @@ ReturnValue_t ReactionWheelsHandler::initializeAfterTaskCreation() {
   return hkMgr->subscribeForRegularPeriodicPacket(params);
 }
 
-// drop up to 3 stale frames from COM IF
+// Drop up to 3 stale frames from COM IF
 ReturnValue_t ReactionWheelsHandler::drainRxNow() {
   if (communicationInterface == nullptr || comCookie == nullptr) {
     return returnvalue::OK;
@@ -76,7 +76,7 @@ ReturnValue_t ReactionWheelsHandler::drainRxNow() {
   return returnvalue::OK;
 }
 
-// pull everything currently available into ring buffer
+// Pull everything currently available into ring buffer
 ReturnValue_t ReactionWheelsHandler::drainRxIntoRing() {
   if (communicationInterface == nullptr || comCookie == nullptr) {
     return returnvalue::OK;
@@ -109,7 +109,7 @@ ReturnValue_t ReactionWheelsHandler::drainRxIntoRing() {
   return returnvalue::OK;
 }
 
-// build periodic or TC-driven STATUS polls
+// Build periodic or TC-driven STATUS polls
 ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t* id) {
   // 1) if a STATUS poll is outstanding, do not poll again
   if (statusAwaitCnt >= 0) {

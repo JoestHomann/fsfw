@@ -46,7 +46,7 @@ constexpr float HK_PERIOD_S =
 constexpr uint8_t RW_TYPED_TM_VERSION = 1;   // for RW typed TM (subservice 131)
 constexpr uint8_t ACS_TYPED_TM_VERSION = 1;  // for ACS diagnostics typed TM (subservice 132)
 
-// ----- PUS 220 subservice numbers (shared constants) -----------------------
+// ----- PUS 220 subservice numbers -----------------------
 // These values are used by the PUS service implementation and ground tools.
 namespace Pus220 {
 // Commands
@@ -54,7 +54,7 @@ constexpr uint8_t SET_SPEED = 1;
 constexpr uint8_t STOP = 2;
 constexpr uint8_t STATUS = 3;
 constexpr uint8_t SET_TORQUE = 4;
-constexpr uint8_t SET_MODE = 10;
+constexpr uint8_t SET_MODE = 10;         // Set RW operating mode
 constexpr uint8_t ACS_SET_ENABLE = 140;  // Enable/disable ACS controller
 
 // Telemetry
