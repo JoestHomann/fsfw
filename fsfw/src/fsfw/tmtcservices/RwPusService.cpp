@@ -4,7 +4,7 @@
 #include <cstring>
 #include <iomanip>
 
-#include "fsfw/devicehandlers/RwProtocol.h"
+#include "fsfw/devicehandlers/RwProtocol.h"                   
 #include "example_common/mission/acs/AcsController.h"
 #include "commonObjects.h"
 #include "fsfw/action/ActionMessage.h"
@@ -12,7 +12,7 @@
 #include "fsfw/devicehandlers/DeviceHandlerMessage.h"
 #include "fsfw/ipc/MessageQueueIF.h"
 #include "fsfw/ipc/MessageQueueSenderIF.h"
-#include "fsfw/modes/ModeMessage.h"
+#include "fsfw/modes/ModeMessage.h"  
 #include "fsfw/objectmanager/ObjectManager.h"
 #include "fsfw/returnvalues/returnvalue.h"
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
@@ -510,7 +510,7 @@ ReturnValue_t RwPusService::emitAcsTypedHk(object_id_t acsObjectId) {
   return tmHelper.storeAndSendTmPacket();
 }
 
-// -------- periodic hook: emit typed 220/131 from HK, and 220/133 when ACS enabled ----------
+// -------- periodic hook: emit typed 220/131 from HK (ONLY in MODE_NORMAL), and 220/133 ----------
 void RwPusService::doPeriodicOperation() {
   ++serviceTick_;
 
@@ -526,7 +526,8 @@ void RwPusService::doPeriodicOperation() {
         }
       }
     }
-    if (rwOid != objects::NO_OBJECT) {
+    // Emit typed 220/131 if we have new data cached in local pool
+    if (rwOid != objects::NO_OBJECT && isRwHkFresh_(rwOid)) {
       (void)emitRwTypedFromHk(rwOid);
     }
 
@@ -572,7 +573,7 @@ ReturnValue_t RwPusService::emitRwTypedFromHk(object_id_t rwObjectId) {
   app[off++] = vRun.value;
 
   be_store_u16(&app[off], vFlags.value); off += 2;
-  be_store_u16(&app[off], 0);            off += 2;  // err=0 (not evaluated)
+  be_store_u16(&app[off], 0);            off += 2;  // err=0 (not evaluated here)
   be_store_u32(&app[off], vCrc.value);   off += 4;
   be_store_u32(&app[off], vMal.value);   off += 4;
   be_store_u32(&app[off], vTsMs.value);  off += 4;
@@ -638,3 +639,22 @@ ReturnValue_t RwPusService::emitAttYprTm(object_id_t acsObjectId) {
   }
   return tmHelper.storeAndSendTmPacket();
 }
+
+bool RwPusService::isRwHkFresh_(object_id_t rwOid, uint32_t maxAgeMs) const {
+  using PoolIds = ReactionWheelsHandler::PoolIds;
+
+  LocalPoolVariable<uint32_t> vTsMs(rwOid, static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS));
+  if (vTsMs.read() != returnvalue::OK || !vTsMs.isValid()) {
+    return false;
+  }
+
+  uint32_t nowMs = 0;
+  Clock::getUptime(&nowMs);
+  if (nowMs < vTsMs.value) {
+    return false; // Schutz bei Uptime-Reset
+  }
+
+  const uint32_t age = nowMs - vTsMs.value;
+  return age <= maxAgeMs;
+}
+

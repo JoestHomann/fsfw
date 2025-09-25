@@ -26,7 +26,7 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
     CMD_STOP = 0x02,
     CMD_STATUS = 0x03,
     CMD_STATUS_POLL = 0x1003,
-    CMD_SET_TORQUE = 0x04      
+    CMD_SET_TORQUE = 0x04
   };
 
   // Internal reply ID for STATUS replies
@@ -87,18 +87,16 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
           timestampMs(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS), this) {}
   };
 
-  
   // ---------------- Modes ------------------------------------------------
   ReactionWheelsHandler(object_id_t objectId, object_id_t comIF, CookieIF* cookie);
 
-  void doStartUp() override;    
-  void doShutDown() override; 
-  void modeChanged() override; 
+  void doStartUp() override;
+  void doShutDown() override;
+  void modeChanged() override;
 
   // ---------------- DeviceHandlerBase hooks ---------------------------------
-  ReturnValue_t buildNormalDeviceCommand(DeviceCommandId_t* id) override;     
-
-  ReturnValue_t buildTransitionDeviceCommand(DeviceCommandId_t* id) override; 
+  ReturnValue_t buildNormalDeviceCommand(DeviceCommandId_t* id) override;
+  ReturnValue_t buildTransitionDeviceCommand(DeviceCommandId_t* id) override;
 
   ReturnValue_t buildCommandFromCommand(DeviceCommandId_t deviceCommand, const uint8_t* data,
                                         size_t len) override;
@@ -127,19 +125,18 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
                              uint16_t startAtIndex) override;
 
  private:
-
   // ---------------- Mode-Transition Delays ------------------------------------
   static constexpr uint32_t RW_DELAY_OFF_TO_ON_MS = RwConfig::DELAY_OFF_TO_ON_MS;
   static constexpr uint32_t RW_DELAY_ON_TO_NORMAL_MS = RwConfig::DELAY_ON_TO_NORMAL_MS;
-  static constexpr uint32_t STOP_DELAY_MS = RwConfig::STOP_DELAY_MS; 
-  
+  static constexpr uint32_t STOP_DELAY_MS = RwConfig::STOP_DELAY_MS;
+
   // ---------------- Mode-Transition retries -----------------------------------
-  static constexpr uint8_t STOP_RETRIES = RwConfig::STOP_RETRIES;  
-  static constexpr uint32_t STOP_RETRY_MS = RwConfig::STOP_RETRY_MS;  
-  static constexpr uint8_t START_RETRIES = RwConfig::START_RETRIES; 
-  static constexpr uint32_t START_RETRY_MS = RwConfig::START_RETRY_MS; 
+  static constexpr uint8_t STOP_RETRIES = RwConfig::STOP_RETRIES;
+  static constexpr uint32_t STOP_RETRY_MS = RwConfig::STOP_RETRY_MS;
+  static constexpr uint8_t START_RETRIES = RwConfig::START_RETRIES;
+  static constexpr uint32_t START_RETRY_MS = RwConfig::START_RETRY_MS;
   static constexpr uint32_t POLL_BLOCK_MS = RwConfig::POLL_BLOCK_MS;
-    
+
   // ---------------- Mode machine states -------------------------------------
 
   // Shutdown
@@ -184,7 +181,7 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   uint32_t lastExtCmdMs{0};
 
   // ---------------- TC-driven STATUS routing --------------------------------
-  bool pendingTcStatusTm{false}; 
+  bool pendingTcStatusTm{false};
   MessageQueueId_t pendingTcStatusReportedTo{MessageQueueIF::NO_QUEUE};
 
   // ---------------- Local datasets ------------------------------------------

@@ -64,12 +64,13 @@ void ReactionWheelsHandler::modeChanged() {
 
   if (m == MODE_ON) {
     sif::info << "ReactionWheelsHandler: Mode ON" << std::endl;
+    // Kein periodisches Polling in MODE_ON
   }
 
   if (m == MODE_NORMAL) {
     sif::info << "ReactionWheelsHandler: Mode NORMAL" << std::endl;
-    (void)drainRxNow(); // clear old bytes before switching to NORMAL
-    statusPollCnt = statusPollDivider;  // force first poll in NORMAL
+    (void)drainRxNow();                // clear old bytes before switching to NORMAL
+    statusPollCnt = statusPollDivider; // force first poll in NORMAL
   }
 }
 
@@ -85,7 +86,7 @@ ReturnValue_t ReactionWheelsHandler::initializeAfterTaskCreation() {
   }
 
 #if RW_ENABLE_SVC3_25
-  // Alt: Periodische HK-Reports via PUS 3/25 (weiterhin verfügbar, aber standardmäßig AUS).
+  // Optional: Periodische HK-Reports via PUS 3/25.
   const sid_t hkSid{getObjectId(), DATASET_ID_HK};
   subdp::RegularHkPeriodicParams params(hkSid, /*enable*/ true,
                                         /*period s*/ RwConfig::HK_PERIOD_S);
@@ -98,7 +99,6 @@ ReturnValue_t ReactionWheelsHandler::initializeAfterTaskCreation() {
   return returnvalue::OK;
 #endif
 }
-
 
 // -------- RX helpers ---------------------------------------------------------
 ReturnValue_t ReactionWheelsHandler::drainRxNow() {
@@ -195,17 +195,16 @@ ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandI
   uint32_t now = 0;
   Clock::getUptime(&now);
 
-
+  // ---- OFF -> ON: Startup handshake (einmalige STATUS-Abfrage + Retries) ----
   if (startingUp_) {
     const bool retryWindow = (now - startupLastTxMs_) >= START_RETRY_MS;
 
-    
     if (!startupSent_ || (retryWindow && startupRetriesDone_ < START_RETRIES)) {
       const size_t total = RwProtocol::buildStatus(txBuf, sizeof(txBuf));
       if (total != 0) {
         rawPacket = txBuf;
         rawPacketLen = total;
-        *id = CMD_STATUS_POLL;
+        *id = CMD_STATUS_POLL;  // erwartet STATUS-Antwort
         statusAwaitCnt = 0;
         startupSent_ = true;
         ++startupRetriesDone_;
@@ -214,11 +213,11 @@ ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandI
         sif::info << "RW: STARTUP STATUS sent (" << int(startupRetriesDone_) << "/"
                   << int(START_RETRIES) << ")" << std::endl;
 #endif
-        return returnvalue::OK; 
+        return returnvalue::OK;
       }
     }
 
-    
+    // Abschlussbedingung: Antwort gesehen oder Delay abgelaufen -> MODE_ON
     if (statusAwaitCnt < 0 || (now - startupT0_) >= RwConfig::DELAY_OFF_TO_ON_MS) {
       startingUp_ = false;
       setMode(MODE_ON);
@@ -228,7 +227,7 @@ ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandI
     return NOTHING_TO_SEND;
   }
 
-
+  // ---- ON -> OFF: STOP-Flow mit Retries ----
   if (shuttingDown_) {
     const bool needRetryWindow = (now - lastStopTxMs_) >= STOP_RETRY_MS;
     if (!stopSent_ || (needRetryWindow && stopRetriesDone_ < STOP_RETRIES)) {
@@ -255,14 +254,30 @@ ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandI
     return NOTHING_TO_SEND;
   }
 
- 
+  // Kein Transition-I/O nötig
   *id = DeviceHandlerIF::NO_COMMAND_ID;
   return NOTHING_TO_SEND;
 }
 
-
+// -------- TC -> wire command builder -----------------------------------------
 ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t deviceCommand,
                                                              const uint8_t* data, size_t len) {
+  // ---- MODE-GUARD: In MODE_ON nur STATUS & STOP erlauben ----
+  Mode_t m = 0;
+  Submode_t sm = 0;
+  getMode(&m, &sm);
+  const bool isNormal = (m == MODE_NORMAL);
+  if (!isNormal) {
+    switch (deviceCommand) {
+      case CMD_STATUS:
+      case CMD_STOP:
+        break;  // erlauben in MODE_ON
+      default:
+        // Ablehnen in MODE_ON (Speed/Torque etc.)
+        return returnvalue::FAILED;
+    }
+  }
+
   switch (deviceCommand) {
     case CMD_SET_SPEED: {
       if (len < sizeof(int16_t)) {
@@ -314,7 +329,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
     }
 
     case CMD_STATUS: {
-      // Allow TC-driven STATUS in MODE_ON/MODE_NORMAL alike
+      // TC-driven STATUS in MODE_ON und MODE_NORMAL zulassen
       (void)drainRxNow();  // clear stale bytes before asking
       const size_t total = RwProtocol::buildStatus(txBuf, sizeof(txBuf));
       if (total == 0) return returnvalue::FAILED;
@@ -340,7 +355,7 @@ void ReactionWheelsHandler::fillCommandAndReplyMap() {
                              /*periodic*/ false, /*hasDifferentReplyId*/ true, REPLY_STATUS_POLL,
                              /*countdown*/ nullptr);
 
-  // IMPORTANT: Treat TC-driven STATUS like a command with expected reply as well.
+  // TC-driven STATUS treated like a command expecting a reply
   insertInCommandAndReplyMap(CMD_STATUS, 5, &replySet, RwProtocol::STATUS_LEN,
                              /*periodic*/ false, /*hasDifferentReplyId*/ true, REPLY_STATUS_POLL,
                              /*countdown*/ nullptr);
@@ -541,7 +556,8 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
 uint32_t ReactionWheelsHandler::getTransitionDelayMs(Mode_t from, Mode_t to) {
   if (from == MODE_OFF && to == MODE_ON) return RwConfig::DELAY_OFF_TO_ON_MS;
   if (from == MODE_ON && to == MODE_NORMAL) return RwConfig::DELAY_ON_TO_NORMAL_MS;
-  if (to == MODE_OFF && from != MODE_OFF) return STOP_RETRIES * STOP_RETRY_MS + STOP_DELAY_MS + 200;
+  if (to == MODE_OFF && from != MODE_OFF)
+    return STOP_RETRIES * STOP_RETRY_MS + STOP_DELAY_MS + 200;
   if (to != from) return 1000;  // Fallback
   return 0;
 }
@@ -573,7 +589,7 @@ ReturnValue_t ReactionWheelsHandler::executeAction(ActionId_t actionId,
     // Remember who asked, so we can mirror the data back in interpretDeviceReply()
     pendingTcStatusTm = true;
     pendingTcStatusReportedTo = commandedBy;
-    // Senden übernimmt jetzt buildCommandFromCommand() (funktioniert in MODE_ON/NORMAL)
+    // Der eigentliche Sendebau passiert in buildCommandFromCommand()
   }
   return DeviceHandlerBase::executeAction(actionId, commandedBy, data, size);
 }
