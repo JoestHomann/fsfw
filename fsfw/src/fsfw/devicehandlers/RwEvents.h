@@ -17,9 +17,6 @@ class RwEvents {
   // Measured torque magnitude is above safety threshold
   static constexpr Event TORQUE_HIGH = MAKE_EVENT(1, severity::LOW);
 
-  // Device specific error code reported by wheel or handler
-  static constexpr Event ERROR_CODE = MAKE_EVENT(2, severity::HIGH);
-
   // No reply within timeout window during STATUS polling
   static constexpr Event TIMEOUT = MAKE_EVENT(3, severity::LOW);
 

@@ -1,10 +1,7 @@
-// ReactionWheelsHandler.cpp – device handler for reaction wheels (English comments, ASCII only)
-
 #include "ReactionWheelsHandler.h"
 
 #include <cmath>
 #include <cstring>
-#include <iomanip>
 #include <vector>
 
 #include "RwEvents.h"
@@ -19,24 +16,7 @@
 #include "fsfw/timemanager/Clock.h"
 #include "fsfw/datapoollocal/ProvidesDataPoolSubscriptionIF.h"
 
-// Debug hex dump helper
-#if RW_VERBOSE
-static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
-#if FSFW_CPP_OSTREAM_ENABLED == 1
-  sif::warning << tag << " (" << n << "): ";
-  for (size_t i = 0; i < n; ++i) {
-    sif::warning << std::hex << std::setw(2) << std::setfill('0') << int(p[i]) << " ";
-  }
-  sif::warning << std::dec << std::endl;
-#else
-  (void)tag; (void)p; (void)n;
-#endif
-}
-#else
-static inline void dumpHexWarn(const char*, const uint8_t*, size_t) {}
-#endif
-
-// ctor – set up RX ring and base class
+// Set up base class
 ReactionWheelsHandler::ReactionWheelsHandler(object_id_t objectId, object_id_t comIF,
                                              CookieIF* cookie)
     : DeviceHandlerBase(objectId, comIF, cookie) {
@@ -44,19 +24,19 @@ ReactionWheelsHandler::ReactionWheelsHandler(object_id_t objectId, object_id_t c
   (void)rxRing.initialize();
 }
 
-// mode hooks – start up into NORMAL
+// Start up into NORMAL
 void ReactionWheelsHandler::doStartUp() {
   sif::info << "ReactionWheelsHandler: doStartUp()" << std::endl;
   setMode(MODE_NORMAL);
 }
 
-// mode hooks – shut down to OFF
+// Shut down
 void ReactionWheelsHandler::doShutDown() {
   sif::info << "ReactionWheelsHandler: doShutDown()" << std::endl;
   setMode(MODE_OFF);
 }
 
-// called on mode change
+// Called on mode change
 void ReactionWheelsHandler::modeChanged() {
   Mode_t m{}; Submode_t s{};
   this->getMode(&m, &s);
@@ -64,7 +44,7 @@ void ReactionWheelsHandler::modeChanged() {
             << " (sub=" << static_cast<int>(s) << ")" << std::endl;
 }
 
-// subscribe HK after task creation
+// Subscribe HK after task creation
 ReturnValue_t ReactionWheelsHandler::initializeAfterTaskCreation() {
   ReturnValue_t rv = DeviceHandlerBase::initializeAfterTaskCreation();
   if (rv != returnvalue::OK) {
@@ -92,10 +72,6 @@ ReturnValue_t ReactionWheelsHandler::drainRxNow() {
     size_t sz = 0;
     ReturnValue_t rvRead = communicationInterface->readReceivedMessage(comCookie, &buf, &sz);
     if (rvRead != returnvalue::OK || buf == nullptr || sz == 0) break;
-#if RW_VERBOSE
-    sif::warning << "drainRxNow: dropped " << sz << " stale bytes" << std::endl;
-    dumpHexWarn("drainRxNow: bytes", buf, (sz > 32 ? 32 : sz));
-#endif
   }
   return returnvalue::OK;
 }
@@ -128,9 +104,6 @@ ReturnValue_t ReactionWheelsHandler::drainRxIntoRing() {
     if (wrote != sz) {
       sif::warning << "RW rxRing overflow: dropped " << (sz - wrote) << " bytes" << std::endl;
     }
-#if RW_VERBOSE
-    sif::warning << "drainRxIntoRing: wrote " << wrote << " bytes" << std::endl;
-#endif
     (void)rxRing.unlockRingBufferMutex();
   }
   return returnvalue::OK;
@@ -149,20 +122,16 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
     }
   }
 
-  // 2) inhibit polls right after an external command
+  // 2) block polls right after an external command
   uint32_t nowMs = 0;
   Clock::getUptime(&nowMs);
-  if (lastExtCmdMs != 0 && (nowMs - lastExtCmdMs) < POLL_INHIBIT_MS) {
+  if (lastExtCmdMs != 0 && (nowMs - lastExtCmdMs) < POLL_BLOCK_MS) {
     *id = DeviceHandlerIF::NO_COMMAND_ID;
     return NOTHING_TO_SEND;
   }
 
   // 3) TC-triggered immediate poll
   if (pendingTcStatusTm) {
-#if RW_VERBOSE
-    sif::warning << "buildNormalDeviceCommand: tcStatusPending=true -> immediate STATUS poll"
-                 << std::endl;
-#endif
     (void)drainRxNow();
     const size_t total = RwProtocol::buildStatusReq(txBuf, sizeof(txBuf));
     if (total == 0) {
@@ -173,7 +142,6 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
     rawPacketLen = total;
     *id          = CMD_STATUS_POLL;
     statusAwaitCnt = 0;
-    dumpHexWarn("DH TX (TC-driven STATUS poll)", txBuf, total);
     return returnvalue::OK;
   }
 
@@ -189,7 +157,6 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
     rawPacketLen = total;
     *id          = CMD_STATUS_POLL;
     statusAwaitCnt = 0;
-    dumpHexWarn("DH TX (periodic STATUS poll)", txBuf, total);
     return returnvalue::OK;
   }
 
@@ -227,8 +194,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       }
       rawPacket = txBuf;
       rawPacketLen = total;
-      dumpHexWarn("DH TX (TC frame: SET_SPEED)", txBuf, total);
-      Clock::getUptime(&lastExtCmdMs);   // short poll inhibit
+      Clock::getUptime(&lastExtCmdMs);   // short poll block
       return returnvalue::OK;
     }
 
@@ -251,8 +217,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       }
       rawPacket = txBuf;
       rawPacketLen = total;
-      dumpHexWarn("DH TX (TC frame: SET_TORQUE)", txBuf, total);
-      Clock::getUptime(&lastExtCmdMs);   // short poll inhibit
+      Clock::getUptime(&lastExtCmdMs);   // short poll block
       return returnvalue::OK;
     }
 
@@ -263,8 +228,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       }
       rawPacket = txBuf;
       rawPacketLen = total;
-      dumpHexWarn("DH TX (TC frame: STOP)", txBuf, total);
-      Clock::getUptime(&lastExtCmdMs);   // short poll inhibit
+      Clock::getUptime(&lastExtCmdMs);   // short poll block
       return returnvalue::OK;
     }
 
@@ -275,15 +239,10 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       }
       rawPacket = txBuf;
       rawPacketLen = total;
-      dumpHexWarn("DH TX (TC frame: STATUS)", txBuf, total);
       return returnvalue::OK;
     }
 
     default:
-#if RW_VERBOSE
-      sif::warning << "ReactionWheelsHandler: unknown deviceCommand 0x" << std::hex
-                   << deviceCommand << std::dec << std::endl;
-#endif
       return returnvalue::FAILED;
   }
 }
@@ -302,7 +261,7 @@ void ReactionWheelsHandler::fillCommandAndReplyMap() {
 }
 
 // FDIR counters – CRC errors
-void ReactionWheelsHandler::onCrcError() {
+void ReactionWheelsHandler::handleCrcError() {
   ++crcErrCnt;
   if (CRC_ERR_EVENT_THRESH != 0 && (crcErrCnt % CRC_ERR_EVENT_THRESH) == 0) {
     triggerEvent(RwEvents::CRC_ERROR, crcErrCnt, 0);
@@ -310,7 +269,7 @@ void ReactionWheelsHandler::onCrcError() {
 }
 
 // FDIR counters – malformed frames
-void ReactionWheelsHandler::onMalformed() {
+void ReactionWheelsHandler::handleMalformed() {
   ++malformedCnt;
   if (MALFORMED_EVENT_THRESH != 0 && (malformedCnt % MALFORMED_EVENT_THRESH) == 0) {
     triggerEvent(RwEvents::INVALID_REPLY, malformedCnt, 0);
@@ -325,15 +284,15 @@ void ReactionWheelsHandler::reportProtocolIssuesInWindow(const uint8_t* buf, siz
     uint8_t id = buf[i + 1];
 
     if (id != static_cast<uint8_t>(RwProtocol::RespId::STATUS)) {
-      onMalformed();
+      handleMalformed();
       continue;
     }
     if (i + RwProtocol::STATUS_LEN > n) {
-      onMalformed();
+      handleMalformed();
       continue;
     }
     if (!RwProtocol::verifyCrc16(&buf[i], RwProtocol::STATUS_LEN)) {
-      onCrcError();
+      handleCrcError();
     }
   }
 }
@@ -356,9 +315,6 @@ static inline bool findLatestValidStatus(const uint8_t* buf, size_t n, long& pos
 // extract reply either from current packet or from RX ring snapshot
 ReturnValue_t ReactionWheelsHandler::scanForReply(const uint8_t* start, size_t len,
                                                   DeviceCommandId_t* foundId, size_t* foundLen) {
-#if RW_VERBOSE
-  sif::warning << "scanForReply: called with len=" << len << std::endl;
-#endif
   reportProtocolIssuesInWindow(start, len);
 
   long pos = -1;
@@ -402,11 +358,6 @@ ReturnValue_t ReactionWheelsHandler::scanForReply(const uint8_t* start, size_t l
   replySet.raw.setValid(true);
   replySet.setValidity(true, true);
 
-#if RW_VERBOSE
-  sif::warning << "scanForReply: matched STATUS in ring at off=" << pos << ", deleting "
-               << (pos + static_cast<long>(RwProtocol::STATUS_LEN)) << " bytes from ring"
-               << std::endl;
-#endif
   (void)rxRing.deleteData(static_cast<size_t>(pos) + RwProtocol::STATUS_LEN,
                           /*deleteRemaining=*/false);
   (void)rxRing.unlockRingBufferMutex();
@@ -425,7 +376,6 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   statusAwaitCnt = -1;
 
   const uint8_t* pkt = replySet.raw.isValid() ? replySet.raw.value : packet;
-  dumpHexWarn("interpretDeviceReply: frame", pkt, RwProtocol::STATUS_LEN);
 
   // offsets must match protocol
   const int16_t speed   = static_cast<int16_t>((pkt[2] << 8) | pkt[3]);
@@ -450,7 +400,6 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   hkSet.torque_mNm.value   = torque;
   hkSet.running.value      = running;
   hkSet.flags.value        = 0;
-  hkSet.error.value        = 0;
   hkSet.crcErrCnt.value    = crcErrCnt;
   hkSet.malformedCnt.value = malformedCnt;
 
@@ -461,25 +410,25 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   // simple FDIR flags with debouncing
   const bool stuckCond = (running == 0) && (std::abs(static_cast<int>(speed)) > STUCK_RPM_THRESH);
   if (stuckCond) {
-    if (++stuckCnt >= STUCK_DEBOUNCE_FRAMES) {
+    if (++stuckRpmCnt >= STUCK_RPM_COUNT) {
       triggerEvent(RwEvents::STUCK, static_cast<uint32_t>(speed),
                    static_cast<uint32_t>(running));
-      stuckCnt = 0;
+      stuckRpmCnt = 0;
       hkSet.flags.value |= 0x0001;
     }
   } else {
-    stuckCnt = 0;
+    stuckRpmCnt = 0;
   }
 
-  const bool torqueHigh = (std::abs(static_cast<int>(torque)) > TORQUE_HIGH_MNM_THRESH);
+  const bool torqueHigh = (std::abs(static_cast<int>(torque)) > HIGH_TORQUE_THRESH);
   if (torqueHigh) {
-    if (++torqueHighCnt >= TORQUE_DEBOUNCE_FRAMES) {
+    if (++highTorqueCnt >= HIGH_TORQUE_COUNT) {
       triggerEvent(RwEvents::TORQUE_HIGH, static_cast<uint32_t>(torque), 0);
-      torqueHighCnt = 0;
+      highTorqueCnt = 0;
       hkSet.flags.value |= 0x0002;
     }
   } else {
-    torqueHighCnt = 0;
+    highTorqueCnt = 0;
   }
 
   // validate and commit
@@ -487,7 +436,6 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   hkSet.torque_mNm.setValid(true);
   hkSet.running.setValid(true);
   hkSet.flags.setValid(true);
-  hkSet.error.setValid(true);
   hkSet.crcErrCnt.setValid(true);
   hkSet.malformedCnt.setValid(true);
   hkSet.timestampMs.setValid(true);
@@ -523,7 +471,6 @@ ReturnValue_t ReactionWheelsHandler::initializeLocalDataPool(localpool::DataPool
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm),    new PoolEntry<int16_t>(1));
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_RUNNING),       new PoolEntry<uint8_t>(1));
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_FLAGS),         new PoolEntry<uint16_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_ERROR),         new PoolEntry<uint16_t>(1));
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT),   new PoolEntry<uint32_t>(1));
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_MALFORMED_CNT), new PoolEntry<uint32_t>(1));
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS),  new PoolEntry<uint32_t>(1));
@@ -534,11 +481,6 @@ ReturnValue_t ReactionWheelsHandler::initializeLocalDataPool(localpool::DataPool
 ReturnValue_t ReactionWheelsHandler::executeAction(ActionId_t actionId,
                                                    MessageQueueId_t commandedBy,
                                                    const uint8_t* data, size_t size) {
-#if RW_VERBOSE
-  sif::warning << "executeAction: actionId=0x" << std::hex << int(actionId)
-               << " size=" << std::dec << size
-               << " commandedBy=0x" << std::hex << commandedBy << std::dec << std::endl;
-#endif
   const auto cmd = static_cast<DeviceCommandId_t>(actionId);
   if (cmd == CMD_STATUS) {
     pendingTcStatusTm = true;
@@ -565,17 +507,6 @@ ReturnValue_t ReactionWheelsHandler::getParameter(uint8_t domainId, uint8_t para
         p_maxRpm = v;
       }
       parameterWrapper->set(p_maxRpm);
-      return returnvalue::OK;
-
-    case ParamId::MAX_SLEW_RPM_S:
-      if (newValues != nullptr) {
-        uint16_t v = 0;
-        if (newValues->getElement(&v, 0) != returnvalue::OK) {
-          return returnvalue::FAILED;
-        }
-        p_maxSlewRpmS = v;
-      }
-      parameterWrapper->set(p_maxSlewRpmS);
       return returnvalue::OK;
 
     case ParamId::POLL_DIVIDER:

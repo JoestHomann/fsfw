@@ -71,7 +71,7 @@ class RwPusService : public CommandingServiceBase {
   // Parse RW status payload from store and emit TM_STATUS (220/130)
   ReturnValue_t handleDataReplyAndEmitTm(store_address_t sid, object_id_t objectId);
 
-  // Handle unrequested replies (e.g. spontaneous STATUS) and emit TM if possible
+  // Handle unrequested replies and emit TM if possible
   void handleUnrequestedReply(CommandMessage* reply) override;
 
   // Emit typed ACS HK (220/132) for the given ACS object
