@@ -12,7 +12,7 @@
 #include "fsfw/ipc/MessageQueueSenderIF.h"
 #include "fsfw/action/ActionMessage.h"
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
-#include "fsfw/timemanager/Clock.h"  // NEW: for timestamp in AttTmV1
+#include "fsfw/timemanager/Clock.h"  // NEW: for timestamp in AttitudeTM
 
 // ACS controller implementation
 // Runs the closed loop each task cycle: read wheel HK, propagate estimator,
@@ -320,7 +320,7 @@ AcsDiagSnapshot AcsController::getDiag() const {
 }
 
 // -------- NEW: Provide a minimal attitude snapshot for TM 220/133 ----------
-void AcsController::getAttTmV1(AttTmV1& out) const {
+void AcsController::getAttitudeTM(AttitudeTM& out) const {
   // Fetch reference and true attitude
   const auto qRef = guidance_.getTargetQuat();
   const float* qTrue = estimator_.quatTrue();
@@ -356,7 +356,7 @@ void AcsController::getAttTmV1(AttTmV1& out) const {
   // Timestamp and rolling sample counter
   (void)Clock::getUptime(&out.timestampMs);
   static uint16_t s = 0;
-  out.sample = s++;
+  //out.sample = s++;
 }
 
 // --- helpers ---

@@ -172,14 +172,14 @@ def handle_tm_att_ypr_133(data: bytes, acs_oid: int):
         ypr_true = (f32(off+0),  f32(off+4),  f32(off+8));   off += 12
         err_deg  = f32(off);                                  off += 4
         dt_ms    = int.from_bytes(p[off:off+4], "big");       off += 4
-        sample   = int.from_bytes(p[off:off+2], "big");       off += 2
+        #sample   = int.from_bytes(p[off:off+2], "big");       off += 2
     except struct.error:
         return False
 
     print(f"[TM 220/133] v{ver} oid=0x{oid_be:08X} enabled={enabled} "
           f"ref[YPRdeg]=[{ypr_ref[0]:.2f},{ypr_ref[1]:.2f},{ypr_ref[2]:.2f}] "
           f"true[YPRdeg]=[{ypr_true[0]:.2f},{ypr_true[1]:.2f},{ypr_true[2]:.2f}] "
-          f"errAngle={err_deg:.2f} deg  dt={dt_ms} ms  sample={sample}")
+          f"errAngle={err_deg:.2f} deg  dt={dt_ms} ms") #sample={sample}
     return True
 
 def handle_tm_hk_3_25(data: bytes, expect_oid: int):

@@ -24,12 +24,7 @@
 //             AppData: ver(1)=1 | oid(4) | speed(i16) | torque(i16) | running(u8)
 //                       | flags(u16) | err(u16) | crcCnt(u32) | malCnt(u32) | tsMs(u32) | sample(u16)
 //   220/132 = TM_ACS_HK_TYPED  (ACS typed HK)
-//   220/133 = TM_ATT_YPR       (Attitude YPR + error angle, v1; fixed 50 bytes)
-//             AppData: ver(1)=1 | oid(4) |
-//                      refYaw(f32) | refPitch(f32) | refRoll(f32) |
-//                      trueYaw(f32)| truePitch(f32)| trueRoll(f32) |
-//                      errAngleDeg(f32) | timestampMs(u32) | sample(u16) |
-//                      padding(11 bytes = 0)
+//   220/133 = TM_ATT_YPR       (v1, human-readable attitude in deg + error angle)
 
 class RwPusService : public CommandingServiceBase {
  public:
@@ -42,7 +37,7 @@ class RwPusService : public CommandingServiceBase {
     SET_MODE         = 10,
     TM_STATUS_TYPED  = 131,
     TM_ACS_HK_TYPED  = 132,
-    TM_ATT_YPR       = 133,   // NEW: typed attitude YPR + error angle
+    TM_ATT_YPR       = 133, 
     ACS_SET_ENABLE   = 140,
     ACS_SET_TARGET   = 141
   };
@@ -57,6 +52,9 @@ class RwPusService : public CommandingServiceBase {
 
   // Resolve stores and finish base initialization
   ReturnValue_t initialize() override;
+
+  // Run loop hook: process TCs and (NEW) periodically emit ATT/YPR TM
+  ReturnValue_t performOperation(uint8_t opCode) override;  // NEW
 
  protected:
   // Check whether a subservice is supported
@@ -84,8 +82,8 @@ class RwPusService : public CommandingServiceBase {
   // Emit typed ACS HK (220/132) for the given ACS object
   ReturnValue_t emitAcsTypedHk(object_id_t acsObjectId);
 
-  // Emit typed Attitude YPR + error angle (220/133) for the given ACS object
-  ReturnValue_t emitAttYprTm(object_id_t acsObjectId);  // NEW
+  // Emit typed ATT YPR (220/133) for the given ACS object   // NEW
+  ReturnValue_t emitAttYprTm(object_id_t acsObjectId);       // NEW
 
  private:
   // Storage managers (resolved in initialize)
@@ -98,6 +96,12 @@ class RwPusService : public CommandingServiceBase {
 
   // Fallback object id if sender mapping is not known yet
   object_id_t lastTargetObjectId_{objects::NO_OBJECT};
+
+  // NEW: Periodic ATT/YPR TM emission control (like HK[3,25] cadence)
+  static constexpr uint32_t ATT_POLL_EVERY_N_DEFAULT = 50;     // every N service ticks
+  uint32_t attPollEveryN_{ATT_POLL_EVERY_N_DEFAULT};           // configurable divider
+  uint32_t attPollCtr_{0};                                     // modulo counter
+  object_id_t acsPollOid_{objects::RW_ACS_CTRL};               // default ACS OID to poll
 };
 
 // Debug on/off switch (set to 1 to enable verbose logging)
