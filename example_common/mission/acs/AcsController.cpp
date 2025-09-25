@@ -353,10 +353,8 @@ void AcsController::getAttitudeTM(AttitudeTM& out) const {
 
   out.errAngleDeg = angDeg;
 
-  // Timestamp and rolling sample counter
+  // Timestamp
   (void)Clock::getUptime(&out.timestampMs);
-  static uint16_t s = 0;
-  //out.sample = s++;
 }
 
 // --- helpers ---

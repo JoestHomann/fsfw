@@ -4,12 +4,12 @@
 #include <cstring>
 #include <iomanip>
 
-#include "commonObjects.h"
+#include "fsfw/devicehandlers/RwProtocol.h"
 #include "example_common/mission/acs/AcsController.h"
+#include "commonObjects.h"
 #include "fsfw/action/ActionMessage.h"
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"
 #include "fsfw/devicehandlers/DeviceHandlerMessage.h"
-#include "fsfw/devicehandlers/RwProtocol.h"
 #include "fsfw/ipc/MessageQueueIF.h"
 #include "fsfw/ipc/MessageQueueSenderIF.h"
 #include "fsfw/modes/ModeMessage.h"
@@ -19,6 +19,11 @@
 #include "fsfw/storagemanager/StorageManagerIF.h"
 #include "fsfw/storagemanager/storeAddress.h"
 #include "fsfw/timemanager/Clock.h"
+
+// NEW: read RW HK variables from local data pool
+#include "fsfw/datapoollocal/LocalPoolVariable.h"
+// NEW: PoolIds definition
+#include "fsfw/devicehandlers/ReactionWheelsHandler.h"
 
 namespace {
 
@@ -36,7 +41,6 @@ inline float be_f32(const uint8_t* p) {
 }
 
 // Scan buffer for a valid STATUS frame with CRC-16 (length = RwProtocol::STATUS_LEN)
-// Returns byte index or -1 if not found
 int findStatusFrameCrc16(const uint8_t* buf, size_t len) {
   if (len < RwProtocol::STATUS_LEN) return -1;
   for (size_t i = 0; i + (RwProtocol::STATUS_LEN - 1) < len; ++i) {
@@ -55,13 +59,13 @@ static inline void be_store_u32(uint8_t* p, uint32_t v) {
   p[0] = static_cast<uint8_t>((v >> 24) & 0xFF);
   p[1] = static_cast<uint8_t>((v >> 16) & 0xFF);
   p[2] = static_cast<uint8_t>((v >> 8) & 0xFF);
-  p[3] = static_cast<uint8_t>(v & 0xFF);
+  p[3] = static_cast<uint8_t>( v       & 0xFF);
 }
 
 // Store big-endian 16-bit unsigned
 static inline void be_store_u16(uint8_t* p, uint16_t v) {
   p[0] = static_cast<uint8_t>((v >> 8) & 0xFF);
-  p[1] = static_cast<uint8_t>(v & 0xFF);
+  p[1] = static_cast<uint8_t>( v       & 0xFF);
 }
 
 // Store big-endian float32
@@ -82,9 +86,7 @@ static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
   }
   sif::warning << std::dec << std::endl;
 #else
-  (void)tag;
-  (void)p;
-  (void)n;
+  (void)tag; (void)p; (void)n;
 #endif
 }
 #else
@@ -97,48 +99,13 @@ inline const char* cmdName(Command_t c) {
     return "DATA_REPLY/DH_DIRECT_DATA";
   }
   switch (c) {
-    case ActionMessage::STEP_SUCCESS:
-      return "STEP_SUCCESS";
-    case ActionMessage::STEP_FAILED:
-      return "STEP_FAILED";
-    case ActionMessage::COMPLETION_SUCCESS:
-      return "COMPLETION_SUCCESS";
-    case ActionMessage::COMPLETION_FAILED:
-      return "COMPLETION_FAILED";
-    case DeviceHandlerMessage::REPLY_RAW_REPLY:
-      return "DH_RAW_REPLY";
-    default:
-      return "UNKNOWN";
+    case ActionMessage::STEP_SUCCESS: return "STEP_SUCCESS";
+    case ActionMessage::STEP_FAILED: return "STEP_FAILED";
+    case ActionMessage::COMPLETION_SUCCESS: return "COMPLETION_SUCCESS";
+    case ActionMessage::COMPLETION_FAILED: return "COMPLETION_FAILED";
+    case DeviceHandlerMessage::REPLY_RAW_REPLY: return "DH_RAW_REPLY";
+    default: return "UNKNOWN";
   }
-}
-
-// --- small math helper to convert quaternion -> yaw/pitch/roll (deg) ---  // NEW
-static inline void quatToYprDeg(const float q[4], float& yawDeg, float& pitchDeg, float& rollDeg) {
-  const float q0 = q[0], q1 = q[1], q2 = q[2], q3 = q[3];
-  const float PI_F = 3.14159265358979323846f;
-  const float rad2deg = 180.0f / PI_F;
-
-  // roll (x)
-  const float sinr_cosp = 2.0f * (q0 * q1 + q2 * q3);
-  const float cosr_cosp = 1.0f - 2.0f * (q1 * q1 + q2 * q2);
-  const float roll = std::atan2(sinr_cosp, cosr_cosp);
-
-  // pitch (y)
-  const float sinp = 2.0f * (q0 * q2 - q3 * q1);
-  float pitch;
-  if (std::fabs(sinp) >= 1.0f)
-    pitch = std::copysign(PI_F / 2.0f, sinp);
-  else
-    pitch = std::asin(sinp);
-
-  // yaw (z)
-  const float siny_cosp = 2.0f * (q0 * q3 + q1 * q2);
-  const float cosy_cosp = 1.0f - 2.0f * (q2 * q2 + q3 * q3);
-  const float yaw = std::atan2(siny_cosp, cosy_cosp);
-
-  yawDeg = yaw * rad2deg;
-  pitchDeg = pitch * rad2deg;
-  rollDeg = roll * rad2deg;
 }
 
 }  // namespace
@@ -146,7 +113,7 @@ static inline void quatToYprDeg(const float q[4], float& yawDeg, float& pitchDeg
 // Minimal per-command state for multi-step operations
 enum class CmdState : uint32_t { NONE = 0, WAIT_DATA = 1 };
 
-// Constructor: basic PUS-220 service with limits for parallel TCs and timeout
+// Constructor
 RwPusService::RwPusService(object_id_t objectId, uint16_t apid, uint8_t serviceId,
                            uint8_t numParallelCommands, uint16_t commandTimeoutSeconds)
     : CommandingServiceBase(objectId, apid, "PUS 220 RW CMD", serviceId, numParallelCommands,
@@ -158,8 +125,8 @@ ReturnValue_t RwPusService::initialize() {
   if (res != returnvalue::OK) return res;
 
   ipcStore = ObjectManager::instance()->get<StorageManagerIF>(objects::IPC_STORE);
-  tmStore = ObjectManager::instance()->get<StorageManagerIF>(objects::TM_STORE);
-  tcStore = ObjectManager::instance()->get<StorageManagerIF>(objects::TC_STORE);
+  tmStore  = ObjectManager::instance()->get<StorageManagerIF>(objects::TM_STORE);
+  tcStore  = ObjectManager::instance()->get<StorageManagerIF>(objects::TC_STORE);
 
 #if RW_PUS_VERBOSE
   sif::warning << "RwPusService::initialize: Init ok. myQ=0x" << std::hex << this->getCommandQueue()
@@ -168,29 +135,6 @@ ReturnValue_t RwPusService::initialize() {
 #endif
 
   return (ipcStore != nullptr) ? returnvalue::OK : returnvalue::FAILED;
-}
-
-// Run loop hook: process TCs and (NEW) periodically emit ATT/YPR TM
-ReturnValue_t RwPusService::performOperation(uint8_t opCode) {
-  // 1) Let the base service process incoming telecommands/replies as usual
-  auto rv = CommandingServiceBase::performOperation(opCode);
-
-  // 2) Periodic ATT/YPR TM emission (similar idea to HK [3,25] cadence)
-  if (++attPollCtr_ >= attPollEveryN_) {
-    attPollCtr_ = 0;
-
-    // NEW: Only emit when ACS is enabled
-    auto* acs = ObjectManager::instance()->get<AcsController>(acsPollOid_);
-    if (acs != nullptr) {
-      AcsDiagSnapshot s = acs->getDiag();
-      if (s.enabled) {
-        (void)emitAttYprTm(acsPollOid_);
-        // Optional: also emit typed ACS HK together with attitude
-        // (void)emitAcsTypedHk(acsPollOid_);
-      }
-    }
-  }
-  return rv;
 }
 
 // Filter supported subservices (TCs). Unknown subservices are rejected.
@@ -209,8 +153,7 @@ ReturnValue_t RwPusService::isValidSubservice(uint8_t subservice) {
   }
 }
 
-// Resolve target queue and object for a TC. The first 4 bytes are always the target OID.
-// ACS local operations return NO_QUEUE to keep handling inside the service.
+// Resolve target queue and object for a TC.
 ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t subservice, const uint8_t* tcData,
                                                      size_t tcLen, MessageQueueId_t* id,
                                                      object_id_t* objectId) {
@@ -224,8 +167,7 @@ ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t subservice, const u
       static_cast<Subservice>(subservice) == Subservice::ACS_SET_TARGET) {
     *id = MessageQueueIF::NO_QUEUE;
     lastTargetObjectId_ = *objectId;
-    // NEW: remember this ACS OID for periodic polling
-    acsPollOid_ = *objectId;  // NEW
+    acsPollOid_ = *objectId;        // remember ACS OID for periodic TM
     return returnvalue::OK;
   }
 
@@ -244,6 +186,9 @@ ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t subservice, const u
   // Map sender queue -> object id (used for unrequested replies)
   qidToObj_[*id] = *objectId;
 
+  // remember RW OID for periodic typed TM
+  rwPollOid_ = *objectId;
+
 #if RW_PUS_VERBOSE
   sif::warning << "RwPusService::getMessageQueueAndObject: commandQueueId=0x" << std::hex << *id
                << std::dec << std::endl;
@@ -258,8 +203,8 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
                                            const uint8_t* tcData, size_t tcLen, uint32_t* state,
                                            object_id_t objectId) {
 #if RW_PUS_VERBOSE
-  sif::info << "RwPusService::prepareCommand: TC subservice=" << int(subservice) << " len=" << tcLen
-            << std::endl;
+  sif::info << "RwPusService::prepareCommand: TC subservice=" << int(subservice)
+            << " len=" << tcLen << std::endl;
 #endif
   if (ipcStore == nullptr) return returnvalue::FAILED;
   if (tcLen < 4) return CommandingServiceBase::INVALID_TC;
@@ -272,7 +217,6 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
 
   switch (static_cast<Subservice>(subservice)) {
     case Subservice::SET_SPEED: {
-      // Payload: int16 rpm
       if (appLen < 2) return CommandingServiceBase::INVALID_TC;
       const int16_t rpm = static_cast<int16_t>((app[0] << 8) | app[1]);
       store_address_t sid{};
@@ -283,9 +227,7 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       ActionMessage::setCommand(message, 0x01 /* CMD_SET_SPEED */, sid);
       return returnvalue::OK;
     }
-
     case Subservice::SET_TORQUE: {
-      // Payload: int16 torque_mNm
       if (appLen < 2) return CommandingServiceBase::INVALID_TC;
       const int16_t tq = static_cast<int16_t>((app[0] << 8) | app[1]);
       store_address_t sid{};
@@ -296,9 +238,7 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       ActionMessage::setCommand(message, 0x04 /* CMD_SET_TORQUE */, sid);
       return returnvalue::OK;
     }
-
     case Subservice::STOP: {
-      // No payload needed
       store_address_t sid{};
       uint8_t* p = nullptr;
       auto rv = ipcStore->getFreeElement(&sid, 1, &p);
@@ -307,7 +247,6 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       ActionMessage::setCommand(message, 0x02 /* CMD_STOP */, sid);
       return returnvalue::OK;
     }
-
     case Subservice::STATUS: {
       // Expect data reply later, set state to WAIT_DATA
       if (state) *state = static_cast<uint32_t>(CmdState::WAIT_DATA);
@@ -319,79 +258,54 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       ActionMessage::setCommand(message, 0x03 /* CMD_STATUS */, sid);
       return returnvalue::OK;
     }
-
     case Subservice::SET_MODE: {
-      // Payload: mode(1) | submode(1)
       if (appLen < 2) return CommandingServiceBase::INVALID_TC;
       const uint8_t mode = app[0];
       const uint8_t submode = app[1];
       ModeMessage::setModeMessage(message, ModeMessage::CMD_MODE_COMMAND, mode, submode);
       return returnvalue::OK;
     }
-
     case Subservice::ACS_SET_ENABLE: {
-      // Local handling: enable or disable ACS controller
       if (appLen < 1) return CommandingServiceBase::INVALID_TC;
       const bool enable = app[0] != 0;
       auto* acs = ObjectManager::instance()->get<AcsController>(objectId);
       if (acs == nullptr) {
+#if RW_PUS_VERBOSE
+        sif::warning << "RwPusService::prepareCommand: ACS OID 0x" << std::hex << objectId
+                     << std::dec << " not found" << std::endl;
+#endif
         return CommandingServiceBase::INVALID_OBJECT;
       }
       acs->enable(enable);
 
-      // Remember OID for periodic polling and emit typed HK
-      acsPollOid_ = objectId;
+      // cache enable for periodic 220/133 emission
+      acsEnabledCached_ = enable;
+      acsPollOid_       = objectId;
+
+      // Emit typed HK right away so operator sees the change
       (void)emitAcsTypedHk(objectId);
-
-      // NEW: Emit ATT/YPR immediately ONLY when enabling
-      if (enable) {
-        (void)emitAttYprTm(objectId);
-      }
-
       return CommandingServiceBase::EXECUTION_COMPLETE;
     }
-
     case Subservice::ACS_SET_TARGET: {
-      // Local handling: set new target attitude quaternion (big-endian f32 * 4)
       if (appLen < 16) return CommandingServiceBase::INVALID_TC;
       float q0 = be_f32(app + 0);
       float q1 = be_f32(app + 4);
       float q2 = be_f32(app + 8);
       float q3 = be_f32(app + 12);
 
-      // Normalize defensively (fallback to identity on tiny norm)
-      float n = std::sqrt(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
-      if (n > 1e-6f) {
-        q0 /= n;
-        q1 /= n;
-        q2 /= n;
-        q3 /= n;
-      } else {
-        q0 = 1.f;
-        q1 = q2 = q3 = 0.f;
-      }
+      float n = std::sqrt(q0*q0 + q1*q1 + q2*q2 + q3*q3);
+      if (n > 1e-6f) { q0/=n; q1/=n; q2/=n; q3/=n; } else { q0=1.f; q1=q2=q3=0.f; }
 
       auto* acs = ObjectManager::instance()->get<AcsController>(objectId);
       if (acs == nullptr) {
         return CommandingServiceBase::INVALID_OBJECT;
       }
-      acs->setTargetAttitude(std::array<float, 4>{q0, q1, q2, q3});
+      acs->setTargetAttitude(std::array<float,4>{q0,q1,q2,q3});
 
-      // Remember OID for periodic polling and emit typed HK
-      acsPollOid_ = objectId;
+      // Emit typed HK to see the new reference early
       (void)emitAcsTypedHk(objectId);
-
-      // NEW: Only emit ATT/YPR now if ACS is already enabled
-      {
-        AcsDiagSnapshot s = acs->getDiag();
-        if (s.enabled) {
-          (void)emitAttYprTm(objectId);
-        }
-      }
-
       return CommandingServiceBase::EXECUTION_COMPLETE;
     }
-
     default:
       return CommandingServiceBase::INVALID_TC;
   }
@@ -401,12 +315,11 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
 ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object_id_t objectId) {
   if (sid.raw == StorageManagerIF::INVALID_ADDRESS) {
 #if RW_PUS_VERBOSE
-    sif::warning << "RwPusService::handleDataReplyAndEmitTm: Invalid store address (sid invalid)"
-                 << std::endl;
+    sif::warning << "RwPusService::handleDataReplyAndEmitTm: Invalid store address" << std::endl;
 #endif
   }
 
-  // Try IPC, then TM, then TC store in this order
+  // Try IPC, then TM, then TC store
   StorageManagerIF* stores[3] = {ipcStore, tmStore, tcStore};
   const uint8_t* buf = nullptr;
   size_t len = 0;
@@ -417,30 +330,16 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
     const uint8_t* b = nullptr;
     size_t l = 0;
     auto rv = s->getData(sid, &b, &l);
-#if RW_PUS_VERBOSE
-    sif::warning << "RwPusService::handleDataReplyAndEmitTm: Try "
-                 << (s == ipcStore ? "IPC" : (s == tmStore ? "TM" : "TC")) << " rv=" << rv
-                 << " len=" << l << std::endl;
-#endif
     if (rv == returnvalue::OK && b != nullptr && l > 0) {
-      buf = b;
-      len = l;
-      usedStore = s;
-      break;
+      buf = b; len = l; usedStore = s; break;
     }
   }
 
   if (buf == nullptr || len == 0) {
-#if RW_PUS_VERBOSE
-    sif::warning << "RwPusService::handleDataReplyAndEmitTm: sid=0x" << std::hex << sid.raw
-                 << std::dec << " has no usable payload -> keep waiting" << std::endl;
-#endif
+    return returnvalue::FAILED;
   }
 
-  // Try to locate and validate a STATUS frame
-  dumpHexWarn("RwPusService::handleDataReplyAndEmitTm: Head", buf, (len < 32 ? len : size_t(32)));
   const int idx = findStatusFrameCrc16(buf, len);
-
   ReturnValue_t rv = returnvalue::OK;
   if (idx >= 0) {
     RwProtocol::Status st{};
@@ -448,10 +347,7 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
     if (!ok) {
       rv = returnvalue::FAILED;
     } else {
-      // Build typed TM v1 (28 bytes):
-      // ver(1)=1 | oid(4) | speed(i16) | torque(i16) | running(u8)
-      // | flags(u16)=0 | err(u16)=0 | crcCnt(u32)=0 | malCnt(u32)=0 | tsMs(u32)=uptime |
-      // sample(u16)++
+      // Build typed TM v1 (28 bytes)
       uint8_t app[28] = {};
       size_t off = 0;
       uint32_t tsMs = 0;
@@ -459,25 +355,18 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
       static uint16_t sample = 0;
 
       app[off++] = 1;  // version
-      be_store_u32(&app[off], static_cast<uint32_t>(objectId));
-      off += 4;
+      be_store_u32(&app[off], static_cast<uint32_t>(objectId)); off += 4;
       app[off++] = static_cast<uint8_t>((st.speedRpm >> 8) & 0xFF);
-      app[off++] = static_cast<uint8_t>(st.speedRpm & 0xFF);
+      app[off++] = static_cast<uint8_t>( st.speedRpm       & 0xFF);
       app[off++] = static_cast<uint8_t>((st.torqueMnM >> 8) & 0xFF);
-      app[off++] = static_cast<uint8_t>(st.torqueMnM & 0xFF);
+      app[off++] = static_cast<uint8_t>( st.torqueMnM       & 0xFF);
       app[off++] = st.running;
-      be_store_u16(&app[off], 0);
-      off += 2;  // flags
-      be_store_u16(&app[off], 0);
-      off += 2;  // err
-      be_store_u32(&app[off], 0);
-      off += 4;  // crcCnt (unknown here)
-      be_store_u32(&app[off], 0);
-      off += 4;  // malCnt (unknown here)
-      be_store_u32(&app[off], tsMs);
-      off += 4;  // timestamp ms
-      be_store_u16(&app[off], sample++);
-      off += 2;
+      be_store_u16(&app[off], 0); off += 2;      // flags
+      be_store_u16(&app[off], 0); off += 2;      // err
+      be_store_u32(&app[off], 0); off += 4;      // crcCnt
+      be_store_u32(&app[off], 0); off += 4;      // malCnt
+      be_store_u32(&app[off], tsMs); off += 4;   // timestamp ms
+      be_store_u16(&app[off], sample++); off += 2;
 
       const auto prv =
           tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_STATUS_TYPED), app, off);
@@ -487,11 +376,9 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
     rv = returnvalue::FAILED;
   }
 
-  // Clean up storage
   if (usedStore != nullptr) {
     (void)usedStore->deleteData(sid);
   }
-
   return rv;
 }
 
@@ -499,8 +386,8 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
 ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, uint32_t* state,
                                         CommandMessage*, object_id_t objectId, bool* isStep) {
 #if RW_PUS_VERBOSE
-  sif::info << "RwPusService::handleReply: cmd=0x" << std::hex << int(reply->getCommand()) << " ("
-            << cmdName(reply->getCommand()) << ")" << std::dec << std::endl;
+  sif::info << "RwPusService::handleReply: cmd=0x" << std::hex << int(reply->getCommand())
+            << " (" << cmdName(reply->getCommand()) << ")" << std::dec << std::endl;
 #endif
 
   const auto cmd = reply->getCommand();
@@ -519,7 +406,6 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
         (sidAction.raw != StorageManagerIF::INVALID_ADDRESS) ? sidAction : sidDh;
 
     if (sid.raw == StorageManagerIF::INVALID_ADDRESS) {
-      // No payload yet; if we are waiting for data, step the state machine
       if (st == CmdState::WAIT_DATA) {
         if (isStep) *isStep = true;
         return returnvalue::OK;
@@ -593,11 +479,6 @@ void RwPusService::handleUnrequestedReply(CommandMessage* reply) {
       obj = it->second;
     }
 
-#if RW_PUS_VERBOSE
-    sif::warning << "RwPusService::handleUnrequestedReply: Treating message as DATA (sid=0x"
-                 << std::hex << sid.raw << std::dec << "), object=0x" << std::hex << obj << std::dec
-                 << " senderQ=0x" << std::hex << sender << std::dec << std::endl;
-#endif
     (void)handleDataReplyAndEmitTm(sid, obj);
   }
 }
@@ -615,91 +496,145 @@ ReturnValue_t RwPusService::emitAcsTypedHk(object_id_t acsObjectId) {
   // [OID(4) | ver(1) | enabled(1) | Kd[3]*f32 | tauDes[3]*f32 | tauWheelCmd[4]*f32 | dtMs(u32)]
   uint8_t app[50] = {};
   size_t off = 0;
-  be_store_u32(&app[off], static_cast<uint32_t>(acsObjectId));
-  off += 4;
+  be_store_u32(&app[off], static_cast<uint32_t>(acsObjectId)); off += 4;
   app[off++] = snap.version;
   app[off++] = snap.enabled ? 1 : 0;
-  for (int i = 0; i < 3; ++i) {
-    be_store_f32(&app[off], snap.Kd[i]);
-    off += 4;
-  }
-  for (int i = 0; i < 3; ++i) {
-    be_store_f32(&app[off], snap.tauDes[i]);
-    off += 4;
-  }
-  for (int i = 0; i < 4; ++i) {
-    be_store_f32(&app[off], snap.tauWheelCmd[i]);
-    off += 4;
-  }
-  be_store_u32(&app[off], snap.dtMs);
-  off += 4;
+  for (int i = 0; i < 3; ++i) { be_store_f32(&app[off], snap.Kd[i]); off += 4; }
+  for (int i = 0; i < 3; ++i) { be_store_f32(&app[off], snap.tauDes[i]); off += 4; }
+  for (int i = 0; i < 4; ++i) { be_store_f32(&app[off], snap.tauWheelCmd[i]); off += 4; }
+  be_store_u32(&app[off], snap.dtMs); off += 4;
 
-  const auto prv =
-      tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_ACS_HK_TYPED), app, off);
+  const auto prv = tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_ACS_HK_TYPED),
+                                            app, off);
   if (prv != returnvalue::OK) return prv;
   return tmHelper.storeAndSendTmPacket();
 }
 
-// Compose and emit typed ATT YPR (PUS 220/133) using big-endian fields  // NEW
-ReturnValue_t RwPusService::emitAttYprTm(object_id_t acsObjectId) {  // NEW
+// -------- periodic hook: emit typed 220/131 from HK, and 220/133 when ACS enabled ----------
+void RwPusService::doPeriodicOperation() {
+  ++serviceTick_;
+
+  if ((serviceTick_ % RW_TYPED_EVERY_N) == 0) {
+    // Prefer last addressed RW; otherwise try any known RW from map
+    object_id_t rwOid = rwPollOid_;
+    if (rwOid == objects::NO_OBJECT ||
+        ObjectManager::instance()->get<DeviceHandlerIF>(rwOid) == nullptr) {
+      for (const auto& kv : qidToObj_) {
+        object_id_t cand = kv.second;
+        if (ObjectManager::instance()->get<DeviceHandlerIF>(cand) != nullptr) {
+          rwOid = cand; break;
+        }
+      }
+    }
+    if (rwOid != objects::NO_OBJECT) {
+      (void)emitRwTypedFromHk(rwOid);
+    }
+
+    // Emit 220/133 attitude TM only when ACS is enabled (cached + diag check inside)
+    if (acsEnabledCached_ && acsPollOid_ != objects::NO_OBJECT) {
+      (void)emitAttYprTm(acsPollOid_);
+    }
+  }
+}
+
+// -------- Build and send TM 220/131 directly from RW local HK dataset --------
+ReturnValue_t RwPusService::emitRwTypedFromHk(object_id_t rwObjectId) {
+  using PoolIds = ReactionWheelsHandler::PoolIds;
+
+  LocalPoolVariable<int16_t>  vSpeed (rwObjectId, static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM));
+  LocalPoolVariable<int16_t>  vTorque(rwObjectId, static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm));
+  LocalPoolVariable<uint8_t>  vRun   (rwObjectId, static_cast<lp_id_t>(PoolIds::HK_RUNNING));
+  LocalPoolVariable<uint16_t> vFlags (rwObjectId, static_cast<lp_id_t>(PoolIds::HK_FLAGS));
+  LocalPoolVariable<uint32_t> vCrc   (rwObjectId, static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT));
+  LocalPoolVariable<uint32_t> vMal   (rwObjectId, static_cast<lp_id_t>(PoolIds::HK_MALFORMED_CNT));
+  LocalPoolVariable<uint32_t> vTsMs  (rwObjectId, static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS));
+
+  (void)vSpeed.read();
+  (void)vTorque.read();
+  (void)vRun.read();
+  (void)vFlags.read();
+  (void)vCrc.read();
+  (void)vMal.read();
+  (void)vTsMs.read();
+
+  // AppData: ver(1)=1 | oid(4) | speed(i16) | torque(i16) | running(u8)
+  //          | flags(u16) | err(u16)=0 | crcCnt(u32) | malCnt(u32) | tsMs(u32) | sample(u16)
+  uint8_t app[28] = {};
+  size_t off = 0;
+
+  app[off++] = 1;  // version
+  be_store_u32(&app[off], static_cast<uint32_t>(rwObjectId)); off += 4;
+
+  app[off++] = static_cast<uint8_t>((vSpeed.value  >> 8) & 0xFF);
+  app[off++] = static_cast<uint8_t>( vSpeed.value         & 0xFF);
+  app[off++] = static_cast<uint8_t>((vTorque.value >> 8) & 0xFF);
+  app[off++] = static_cast<uint8_t>( vTorque.value        & 0xFF);
+  app[off++] = vRun.value;
+
+  be_store_u16(&app[off], vFlags.value); off += 2;
+  be_store_u16(&app[off], 0);            off += 2;  // err=0 (not evaluated)
+  be_store_u32(&app[off], vCrc.value);   off += 4;
+  be_store_u32(&app[off], vMal.value);   off += 4;
+  be_store_u32(&app[off], vTsMs.value);  off += 4;
+
+  be_store_u16(&app[off], rwSample_++);  off += 2;
+
+  const auto prv =
+      tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_STATUS_TYPED), app, off);
+  if (prv != returnvalue::OK) {
+    return prv;
+  }
+  return tmHelper.storeAndSendTmPacket();
+}
+
+// -------- Compose and emit TM 220/133 using AcsController::getAttitudeTM() --------
+ReturnValue_t RwPusService::emitAttYprTm(object_id_t acsObjectId) {
   auto* acs = ObjectManager::instance()->get<AcsController>(acsObjectId);
   if (acs == nullptr) {
     return CommandingServiceBase::INVALID_OBJECT;
   }
 
-  AcsDiagSnapshot s = acs->getDiag();
+  // Gate by runtime state: only emit while enabled
+  AcsDiagSnapshot diag = acs->getDiag();
+  if (!diag.enabled) {
+    return returnvalue::OK; // do not emit when disabled
+  }
 
-  // Convert quaternions to YPR in degrees (ref & true)
-  float yRef, pRef, rRef, yTrue, pTrue, rTrue;
-  const float qRef[4] = {s.qRef[0], s.qRef[1], s.qRef[2], s.qRef[3]};
-  const float qTrue[4] = {s.qTrue[0], s.qTrue[1], s.qTrue[2], s.qTrue[3]};
-  quatToYprDeg(qRef, yRef, pRef, rRef);
-  quatToYprDeg(qTrue, yTrue, pTrue, rTrue);
+  AcsController::AttitudeTM att{};
+  acs->getAttitudeTM(att);
 
-  // Small-angle error magnitude from vector part: e = 2*q_err_vec (rad) -> angle (deg)
-  // q_err = qRef * conj(qTrue)
-  const float qc[4] = {qTrue[0], -qTrue[1], -qTrue[2], -qTrue[3]};
-  const float qe[4] = {qRef[0] * qc[0] - qRef[1] * qc[1] - qRef[2] * qc[2] - qRef[3] * qc[3],
-                       qRef[0] * qc[1] + qRef[1] * qc[0] + qRef[2] * qc[3] - qRef[3] * qc[2],
-                       qRef[0] * qc[2] - qRef[1] * qc[3] + qRef[2] * qc[0] + qRef[3] * qc[1],
-                       qRef[0] * qc[3] + qRef[1] * qc[2] - qRef[2] * qc[1] + qRef[3] * qc[0]};
-  float q0 = qe[0], q1 = qe[1], q2 = qe[2], q3 = qe[3];
-  if (q0 < 0.f) {
-    q0 = -q0;
-    q1 = -q1;
-    q2 = -q2;
-    q3 = -q3;
-  }  // shortest path
-  const float evecX = 2.0f * q1, evecY = 2.0f * q2, evecZ = 2.0f * q3;
-  const float eNorm = std::sqrt(evecX * evecX + evecY * evecY + evecZ * evecZ);
-  const float PI_F = 3.14159265358979323846f;
-  const float rad2deg = 180.0f / PI_F;
-  const float errDeg = 2.0f * std::asin(std::min(1.0f, 0.5f * eNorm)) * rad2deg;
-
-  // AppData layout (big-endian), fixed 40 bytes:
-  // [OID(4) | ver(1)=1 | enabled(1) |
-  //  yprRef[3]*f32 (deg) | yprTrue[3]*f32 (deg) |
-  //  errAngleDeg f32 | dtMs u32 | sample u16]
-  uint8_t app[40] = {};
+  // AppData layout (big-endian):
+  // ver(1)=1 |
+  // oid(4) |
+  // enabled(1) |
+  // refYaw(f32) refPitch(f32) refRoll(f32) |
+  // trueYaw(f32) truePitch(f32) trueRoll(f32) |
+  // errAngleDeg(f32) |
+  // dtMs(u32) |
+  // sample(u16)
+  uint8_t app[1 + 4 + 1 + 7*4 + 4 + 2] = {};
   size_t off = 0;
-  static uint16_t sample = 0;
 
-  be_store_u32(&app[off], static_cast<uint32_t>(acsObjectId));
-  off += 4;
-  app[off++] = 1;                  // version
-  app[off++] = s.enabled ? 1 : 0;  // enabled flag
+  app[off++] = 1; // version
+  be_store_u32(&app[off], static_cast<uint32_t>(acsObjectId)); off += 4;
+  app[off++] = diag.enabled ? 1 : 0;
 
-  be_store_f32(&app[off], yRef); off += 4;
-  be_store_f32(&app[off], pRef); off += 4;
-  be_store_f32(&app[off], rRef); off += 4;
-  be_store_f32(&app[off], yTrue); off += 4;
-  be_store_f32(&app[off], pTrue); off += 4;
-  be_store_f32(&app[off], rTrue); off += 4;
-  be_store_f32(&app[off], errDeg); off += 4;
-  be_store_u32(&app[off], s.dtMs); off += 4;
-  //be_store_u16(&app[off], sample++); off += 2;
+  auto putf = [&](float f) { be_store_f32(&app[off], f); off += 4; };
+  putf(att.refYawDeg);
+  putf(att.refPitchDeg);
+  putf(att.refRollDeg);
+  putf(att.trueYawDeg);
+  putf(att.truePitchDeg);
+  putf(att.trueRollDeg);
+  putf(att.errAngleDeg);
 
-  const auto prv = tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_ATT_YPR), app, off);
-  if (prv != returnvalue::OK) return prv;
+  be_store_u32(&app[off], diag.dtMs); off += 4;
+  be_store_u16(&app[off], attSample_++); off += 2;
+
+  const auto prv =
+      tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_ATT_YPR_TYPED), app, off);
+  if (prv != returnvalue::OK) {
+    return prv;
+  }
   return tmHelper.storeAndSendTmPacket();
 }

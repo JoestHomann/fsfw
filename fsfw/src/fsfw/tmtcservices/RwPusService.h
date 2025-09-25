@@ -7,7 +7,6 @@
 
 #include <unordered_map>
 
-// English comments!
 // PUS Service 220 for Reaction Wheel & ACS control.
 //
 // Telecommands (TC):
@@ -24,7 +23,7 @@
 //             AppData: ver(1)=1 | oid(4) | speed(i16) | torque(i16) | running(u8)
 //                       | flags(u16) | err(u16) | crcCnt(u32) | malCnt(u32) | tsMs(u32) | sample(u16)
 //   220/132 = TM_ACS_HK_TYPED  (ACS typed HK)
-//   220/133 = TM_ATT_YPR       (v1, human-readable attitude in deg + error angle)
+//   220/133 = TM_ATT_YPR_TYPED (Attitude YPR typed; sent periodically when ACS is enabled)
 
 class RwPusService : public CommandingServiceBase {
  public:
@@ -37,24 +36,17 @@ class RwPusService : public CommandingServiceBase {
     SET_MODE         = 10,
     TM_STATUS_TYPED  = 131,
     TM_ACS_HK_TYPED  = 132,
-    TM_ATT_YPR       = 133, 
+    TM_ATT_YPR_TYPED = 133,   // Attitude YPR typed TM
     ACS_SET_ENABLE   = 140,
     ACS_SET_TARGET   = 141
   };
 
   // Constructor
-  // apid        : APID of the TM/TC space packets
-  // serviceId   : PUS service number (220 here)
-  // numParallel : max number of parallel commands this service tracks
-  // timeoutSec  : command timeout in seconds
   RwPusService(object_id_t objectId, uint16_t apid, uint8_t serviceId = 220,
                uint8_t numParallelCommands = 8, uint16_t commandTimeoutSeconds = 5);
 
   // Resolve stores and finish base initialization
   ReturnValue_t initialize() override;
-
-  // Run loop hook: process TCs and (NEW) periodically emit ATT/YPR TM
-  ReturnValue_t performOperation(uint8_t opCode) override;  // NEW
 
  protected:
   // Check whether a subservice is supported
@@ -82,10 +74,14 @@ class RwPusService : public CommandingServiceBase {
   // Emit typed ACS HK (220/132) for the given ACS object
   ReturnValue_t emitAcsTypedHk(object_id_t acsObjectId);
 
-  // Emit typed ATT YPR (220/133) for the given ACS object   // NEW
-  ReturnValue_t emitAttYprTm(object_id_t acsObjectId);       // NEW
+  // -------- periodic activities (typed RW + typed attitude TM) -------------
+  void doPeriodicOperation() override;                           // periodic hook
+  ReturnValue_t emitAttYprTm(object_id_t acsObjectId);           // emit 220/133
 
  private:
+  // Build and send TM 220/131 directly from RW local HK dataset
+  ReturnValue_t emitRwTypedFromHk(object_id_t rwObjectId);
+
   // Storage managers (resolved in initialize)
   StorageManagerIF* ipcStore = nullptr;
   StorageManagerIF* tmStore  = nullptr;
@@ -97,11 +93,15 @@ class RwPusService : public CommandingServiceBase {
   // Fallback object id if sender mapping is not known yet
   object_id_t lastTargetObjectId_{objects::NO_OBJECT};
 
-  // NEW: Periodic ATT/YPR TM emission control (like HK[3,25] cadence)
-  static constexpr uint32_t ATT_POLL_EVERY_N_DEFAULT = 50;     // every N service ticks
-  uint32_t attPollEveryN_{ATT_POLL_EVERY_N_DEFAULT};           // configurable divider
-  uint32_t attPollCtr_{0};                                     // modulo counter
-  object_id_t acsPollOid_{objects::RW_ACS_CTRL};               // default ACS OID to poll
+  // -------- lightweight periodic state -------------------------------------
+  object_id_t rwPollOid_{objects::RW_HANDLER};   // default RW device to report (updated on TC)
+  object_id_t acsPollOid_{objects::RW_ACS_CTRL}; // default ACS object to report
+  uint32_t    serviceTick_{0};                   // increments each service tick
+  uint16_t    rwSample_{0};                      // running sample counter for 220/131
+  uint16_t    attSample_{0};                     // running sample counter for 220/133
+  bool        acsEnabledCached_{false};          // gate for 220/133; set by ACS_SET_ENABLE
+
+  static constexpr uint32_t RW_TYPED_EVERY_N = 25; // emit 220/131 every N service calls
 };
 
 // Debug on/off switch (set to 1 to enable verbose logging)

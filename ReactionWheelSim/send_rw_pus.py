@@ -182,68 +182,6 @@ def handle_tm_att_ypr_133(data: bytes, acs_oid: int):
           f"errAngle={err_deg:.2f} deg  dt={dt_ms} ms") #sample={sample}
     return True
 
-def handle_tm_hk_3_25(data: bytes, expect_oid: int):
-    """Decode Periodic HK reports (Service 3 / Sub 25) for the RW handler.
-
-    Observed RW payload layout AFTER SID (OID+setId):
-      0x00CB (DATASET_ID_HK) |
-      speed(i16) | torque(i16) | running(u8) | flags(u16) |
-      crcErrCnt(u32) | malformedCnt(u32) | sample(u16) | timestampMs(u32)
-
-    We do NOT strip a trailing CRC here; we just read the expected 23 bytes
-    (2 for 0x00CB + 21 for fields) if available.
-    """
-    def u16(b, i, signed=False): return int.from_bytes(b[i:i+2], "big", signed=signed)
-    def i16(b, i): return int.from_bytes(b[i:i+2], "big", signed=True)
-    def u32(b, i): return int.from_bytes(b[i:i+4], "big", signed=False)
-
-    # Accept both your RW OID and the 0x4060 you've seen in dumps.
-    oid_candidates = (expect_oid, 0x00004060)
-
-    pos = -1
-    found_oid = None
-    for cand in oid_candidates:
-        p = data.find(cand.to_bytes(4, "big"), 9)
-        if p != -1:
-            found_oid, pos = cand, p
-            break
-
-    if found_oid is None or pos + 6 > len(data):
-        print(f"[TM 3/25] Periodic HK (len={len(data)})")
-        return
-
-    set_id = u16(data, pos + 4)
-    print(f"[TM 3/25] Periodic HK  SID: oid=0x{found_oid:08X}, set=0x{set_id:04X}, len={len(data)}")
-
-    # Payload right after SID; read as much as is available
-    payload = data[pos + 6 : ]
-
-    # Need at least: 2 (dsId) + 21 (fields) = 23 bytes
-    if len(payload) < 23:
-        hex_dump = " ".join(f"{x:02X}" for x in payload)
-        print(f"    (payload too short for RW HK layout) hex={hex_dump}")
-        return
-
-    ds_id = u16(payload, 0)
-    if ds_id != 0x00CB:
-        hex_dump = " ".join(f"{x:02X}" for x in payload[:32])
-        print(f"    (unexpected dataset id 0x{ds_id:04X}) payload(hex)={hex_dump}")
-        return
-
-    i = 2
-    speed   = i16(payload, i); i += 2
-    torque  = i16(payload, i); i += 2
-    running = payload[i];      i += 1
-    flags   = u16(payload, i); i += 2
-    crc_cnt = u32(payload, i); i += 4
-    mal_cnt = u32(payload, i); i += 4
-    sample  = u16(payload, i); i += 2
-    ts_ms   = u32(payload, i); i += 4
-
-    print(f"    RW HK: speed={speed} rpm, torque={torque} mNm, running={running}, "
-          f"flags=0x{flags:04X}, crcErrCnt={crc_cnt}, malformedCnt={mal_cnt}, "
-          f"sample={sample}, tsMs={ts_ms}")
-
 def handle_tm(data: bytes, rw_oid: int, acs_oid: int):
     """Decode minimal PUS TM set."""
     svc, sub = parse_service_subservice(data)
@@ -262,15 +200,10 @@ def handle_tm(data: bytes, rw_oid: int, acs_oid: int):
         if handle_tm_typed_rw_131(data, rw_oid):
             return
 
-    # NEW: typed ATT YPR
+    # Typed ATT YPR
     if svc == SERVICE and sub == SUB_TM_ATT_YPR:
         if handle_tm_att_ypr_133(data, acs_oid):
             return
-
-    # Periodic HK
-    if svc == SVC_HK and sub == SUB_HK_REPORT_PERIODIC:
-        handle_tm_hk_3_25(data, rw_oid)  # decode RW HK content
-        return
 
     # Generic print for other packets
     if PRINT_UNKNOWN_TM or svc in (SERVICE, SVC_HK):

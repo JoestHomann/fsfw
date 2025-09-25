@@ -64,7 +64,6 @@ void ReactionWheelsHandler::modeChanged() {
 
   if (m == MODE_ON) {
     sif::info << "ReactionWheelsHandler: Mode ON" << std::endl;
-    (void)drainRxNow(); // clear old bytes before starting
   }
 
   if (m == MODE_NORMAL) {
@@ -75,19 +74,31 @@ void ReactionWheelsHandler::modeChanged() {
 }
 
 // -------- HK subscription ----------------------------------------------------
+#ifndef RW_ENABLE_SVC3_25
+#define RW_ENABLE_SVC3_25 0
+#endif
+
 ReturnValue_t ReactionWheelsHandler::initializeAfterTaskCreation() {
   ReturnValue_t rv = DeviceHandlerBase::initializeAfterTaskCreation();
   if (rv != returnvalue::OK) {
     return rv;
   }
+
+#if RW_ENABLE_SVC3_25
+  // Alt: Periodische HK-Reports via PUS 3/25 (weiterhin verfügbar, aber standardmäßig AUS).
   const sid_t hkSid{getObjectId(), DATASET_ID_HK};
-  subdp::RegularHkPeriodicParams params(hkSid, /*enable*/ true, /*period s*/ RwConfig::HK_PERIOD_S);
+  subdp::RegularHkPeriodicParams params(hkSid, /*enable*/ true,
+                                        /*period s*/ RwConfig::HK_PERIOD_S);
   auto* hkMgr = getHkManagerHandle();
   if (hkMgr == nullptr) {
     return returnvalue::FAILED;
   }
   return hkMgr->subscribeForRegularPeriodicPacket(params);
+#else
+  return returnvalue::OK;
+#endif
 }
+
 
 // -------- RX helpers ---------------------------------------------------------
 ReturnValue_t ReactionWheelsHandler::drainRxNow() {
@@ -184,17 +195,17 @@ ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandI
   uint32_t now = 0;
   Clock::getUptime(&now);
 
-  // ---- OFF -> ON: Startup-Handshake hier abarbeiten ----
+
   if (startingUp_) {
     const bool retryWindow = (now - startupLastTxMs_) >= START_RETRY_MS;
 
-    // STATUS senden (einmalig + optionale Re-Trys)
+    
     if (!startupSent_ || (retryWindow && startupRetriesDone_ < START_RETRIES)) {
       const size_t total = RwProtocol::buildStatus(txBuf, sizeof(txBuf));
       if (total != 0) {
         rawPacket = txBuf;
         rawPacketLen = total;
-        *id = CMD_STATUS_POLL;  // erwartete STATUS-Antwort
+        *id = CMD_STATUS_POLL;
         statusAwaitCnt = 0;
         startupSent_ = true;
         ++startupRetriesDone_;
@@ -203,12 +214,11 @@ ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandI
         sif::info << "RW: STARTUP STATUS sent (" << int(startupRetriesDone_) << "/"
                   << int(START_RETRIES) << ")" << std::endl;
 #endif
-        return returnvalue::OK;  // wird jetzt gesendet
+        return returnvalue::OK; 
       }
     }
 
-    // Abschlussbedingung: Antwort gesehen (interpret setzt statusAwaitCnt < 0)
-    // oder OFF->ON-Delay abgelaufen -> weiter in MODE_ON
+    
     if (statusAwaitCnt < 0 || (now - startupT0_) >= RwConfig::DELAY_OFF_TO_ON_MS) {
       startingUp_ = false;
       setMode(MODE_ON);
@@ -218,7 +228,7 @@ ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandI
     return NOTHING_TO_SEND;
   }
 
-  // ---- ON -> OFF: Dein bestehender STOP-Flow ----
+
   if (shuttingDown_) {
     const bool needRetryWindow = (now - lastStopTxMs_) >= STOP_RETRY_MS;
     if (!stopSent_ || (needRetryWindow && stopRetriesDone_ < STOP_RETRIES)) {
@@ -245,12 +255,12 @@ ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandI
     return NOTHING_TO_SEND;
   }
 
-  // Kein Transition-I/O nötig
+ 
   *id = DeviceHandlerIF::NO_COMMAND_ID;
   return NOTHING_TO_SEND;
 }
 
-// -------- TC -> wire command builder -----------------------------------------
+
 ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t deviceCommand,
                                                              const uint8_t* data, size_t len) {
   switch (deviceCommand) {

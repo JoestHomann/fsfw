@@ -82,11 +82,10 @@ class AcsController : public SystemObject, public ExecutableObjectIF {
     float trueRollDeg{0.f};  // true roll       [deg]
     float errAngleDeg{0.f};  // small-angle attitude error magnitude [deg]
     uint32_t timestampMs{0}; // uptime in ms when snapshot taken
-    //uint16_t sample{0};      // rolling sample counter
   };
 
   // Fill AttitudeTM with a consistent snapshot (thread-safe enough for TM)
-  void getAttitudeTM(AttitudeTM& out) const;  // NEW
+  void getAttitudeTM(AttitudeTM& out) const;
 
  private:
   // Static config and wiring
