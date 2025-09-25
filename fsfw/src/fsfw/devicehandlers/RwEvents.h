@@ -3,7 +3,7 @@
 
 #include "RwConfig.h"
 
-// Reaction Wheel event definitions (FSFW)
+// Reaction Wheel event definitions
 // Provides event IDs used by the RW device handler and services.
 
 class RwEvents {

@@ -67,11 +67,11 @@ size_t buildStop(uint8_t* out, size_t cap) {
   return CMD_LEN;
 }
 
-// Build "STATUS_REQ" command frame (no payload)
-size_t buildStatusReq(uint8_t* out, size_t cap) {
+// Build "STATUS" command frame (no payload)
+size_t buildStatus(uint8_t* out, size_t cap) {
   if (out == nullptr || cap < CMD_LEN) return 0;
   out[0] = START_CMD;
-  out[1] = static_cast<uint8_t>(CmdId::STATUS_REQ);
+  out[1] = static_cast<uint8_t>(CmdId::STATUS);
   out[2] = 0x00;
   out[3] = 0x00;
   const uint16_t crc = calcCrc16(out, CMD_LEN - 2);

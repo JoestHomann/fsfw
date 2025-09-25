@@ -1,3 +1,4 @@
+// RwConfig.h
 #pragma once
 #include <cstdint>
 
@@ -9,26 +10,32 @@ constexpr uint8_t RW_SUBSYSTEM_ID = 0x44;
 // ----- Mode-Transition Delays ----------------------------------------------
 constexpr uint32_t DELAY_OFF_TO_ON_MS = 100;
 constexpr uint32_t DELAY_ON_TO_NORMAL_MS = 100;
+constexpr uint32_t STOP_DELAY_MS = 100;
+
+// ----- Mode-Transition retries -------------------------------------------
+constexpr uint8_t STOP_RETRIES = 0;      // send STOP retry count
+constexpr uint32_t STOP_RETRY_MS = 50;   // delay between STOP retries
+constexpr uint8_t START_RETRIES = 0;     // START retry count
+constexpr uint32_t START_RETRY_MS = 50;  // delay between startup retries
+constexpr uint32_t POLL_BLOCK_MS = 50;   // short poll block after external TC
 
 // ----- Polling / Timeouts ---------------------------------------------------
 constexpr uint32_t STATUS_POLL_DIVIDER_DEFAULT = 2;  // PST cycles between periodic STATUS polls
-constexpr uint8_t STATUS_TIMEOUT_CYCLES = 4;         // Cycles until timeout after a poll
+constexpr uint8_t STATUS_TIMEOUT_CYCLES = 4;         // cycles until timeout after a poll
 constexpr uint32_t STATUS_LOG_EVERY = 12;            // log every nth STATUS frame
 
 // ----- RX Ring Buffer -------------------------------------------------------
-constexpr std::size_t RX_RING_SIZE = 256;          // in bytes
-constexpr uint32_t RX_RING_OBJ_ID = 0xDEADB011;    // object ID for RX ring buffer
+constexpr std::size_t RX_RING_SIZE = 256;        // in bytes
+constexpr uint32_t RX_RING_OBJ_ID = 0xDEADB011;  // object ID for RX ring buffer
 
 // ----- Reaction Wheel Limits ------------------------------------------------
-constexpr int16_t MAX_RPM_DEFAULT = 4000;       // RPM limit of RWs
-
-// Clamp for torque command (absolute, in mNm)
-constexpr int16_t MAX_TORQUE_MNM_DEFAULT = 5;  // Torque limit of RWs
+constexpr int16_t MAX_RPM_DEFAULT = 4000;      // RPM limit of RWs
+constexpr int16_t MAX_TORQUE_MNM_DEFAULT = 5;  // clamp for torque cmd (absolute, in mNm)
 
 // ----- FDIR Thresholds ------------------------------------------------------
 constexpr int16_t STUCK_RPM_THRESH = 50;  // running == 0 but RPM above threshold
 constexpr uint8_t STUCK_RPM_COUNT = 3;
-constexpr int16_t HIGH_TORQUE_THRESH = 600; // torque magnitude threshold
+constexpr int16_t HIGH_TORQUE_THRESH = 600;  // torque magnitude threshold
 constexpr uint8_t HIGH_TORQUE_COUNT = 5;
 
 // ----- Event Backoff (emit event every N errors) ----------------------------
@@ -39,14 +46,14 @@ constexpr uint32_t MALFORMED_EVENT_THRESH = 10;
 // Period for periodic HK generation by the LocalDataPoolManager (seconds).
 // Note: Actual TM emission rate also depends on global HK distributor settings.
 constexpr float HK_PERIOD_S =
-    1000.0f;  // HK_Period = PST_Period * nonDiagIntervalFactor * HK_PERIOD_S = 0.1 * 5 * N
+    10.0f;  // HK_Period = PST_Period * nonDiagIntervalFactor * HK_PERIOD_S = 0.1 * 5 * N
 
 // ----- Typed TM (PUS 220) versions -----------------------------------------
 // Keep small version integers to allow forward-compatible parsing on ground.
 constexpr uint8_t RW_TYPED_TM_VERSION = 1;   // for RW typed TM (subservice 131)
 constexpr uint8_t ACS_TYPED_TM_VERSION = 1;  // for ACS diagnostics typed TM (subservice 132)
 
-// ----- PUS 220 subservice numbers -----------------------
+// ----- PUS 220 subservice numbers ------------------------------------------
 // These values are used by the PUS service implementation and ground tools.
 namespace Pus220 {
 // Commands

@@ -21,16 +21,15 @@
 class ReactionWheelsHandler : public DeviceHandlerBase {
  public:
   // ---------------- Command / Reply IDs -------------------------------------
-  // Wire-protocol aligned command IDs
   enum DeviceCmd : DeviceCommandId_t {
     CMD_SET_SPEED = 0x01,
     CMD_STOP = 0x02,
     CMD_STATUS = 0x03,
-    CMD_STATUS_POLL = 0x1003,  // internal "poll now" command (periodic/auto)
-    CMD_SET_TORQUE = 0x04      // torque in mNm
+    CMD_STATUS_POLL = 0x1003,
+    CMD_SET_TORQUE = 0x04      
   };
 
-  // Unified internal reply ID for STATUS replies
+  // Internal reply ID for STATUS replies
   enum ReplyId : DeviceCommandId_t { REPLY_STATUS_POLL = 0x2002 };
 
   // ---------------- Parameter service ---------------------------------------
@@ -49,8 +48,8 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
     HK_TIMESTAMP_MS = 8
   };
 
-  // --- HK flag bits --------------------------------
-  static constexpr uint16_t FLAG_STUCK       = 0x0001;  // running==0 and |speed| above threshold
+  // --------------- HK flag bits --------------------------------
+  static constexpr uint16_t FLAG_STUCK = 0x0001;        // running==0 and |speed| above threshold
   static constexpr uint16_t FLAG_TORQUE_HIGH = 0x0002;  // |torque| above threshold
 
   // Dataset IDs
@@ -88,36 +87,38 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
           timestampMs(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS), this) {}
   };
 
-  // ---------------- Transition delays ---------------------------------------
-  static constexpr uint32_t RW_DELAY_OFF_TO_ON_MS = RwConfig::DELAY_OFF_TO_ON_MS;
-  static constexpr uint32_t RW_DELAY_ON_TO_NORMAL_MS = RwConfig::DELAY_ON_TO_NORMAL_MS;
-
-  // ---------------- Lifecycle ------------------------------------------------
+  
+  // ---------------- Modes ------------------------------------------------
   ReactionWheelsHandler(object_id_t objectId, object_id_t comIF, CookieIF* cookie);
 
-  void doStartUp() override;    // enter MODE_ON with quick probe handshake
-  void doShutDown() override;   // STOP & enter MODE_OFF
-  void modeChanged() override;  // log mode change and force initial poll in NORMAL
+  void doStartUp() override;    
+  void doShutDown() override; 
+  void modeChanged() override; 
 
   // ---------------- DeviceHandlerBase hooks ---------------------------------
-  ReturnValue_t buildNormalDeviceCommand(DeviceCommandId_t* id) override;      // periodic polls
-  ReturnValue_t buildTransitionDeviceCommand(DeviceCommandId_t* id) override;  // none
+  ReturnValue_t buildNormalDeviceCommand(DeviceCommandId_t* id) override;     
+
+  ReturnValue_t buildTransitionDeviceCommand(DeviceCommandId_t* id) override; 
+
   ReturnValue_t buildCommandFromCommand(DeviceCommandId_t deviceCommand, const uint8_t* data,
-                                        size_t len) override;  // build wire cmd (incl. STATUS TC)
+                                        size_t len) override;
+
   ReturnValue_t scanForReply(const uint8_t* start, size_t len, DeviceCommandId_t* foundId,
                              size_t* foundLen) override;
+
   ReturnValue_t interpretDeviceReply(DeviceCommandId_t id, const uint8_t* packet) override;
+
   uint32_t getTransitionDelayMs(Mode_t from, Mode_t to) override;
 
   ReturnValue_t initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
                                         LocalDataPoolManager& poolManager) override;
+
   void fillCommandAndReplyMap() override;
 
   ReturnValue_t initializeAfterTaskCreation() override;
 
   LocalPoolDataSetBase* getDataSetHandle(sid_t sid) override;
 
-  // Keep track of STATUS callers to mirror data back via ActionHelper
   ReturnValue_t executeAction(ActionId_t actionId, MessageQueueId_t commandedBy,
                               const uint8_t* data, size_t size) override;
 
@@ -126,6 +127,19 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
                              uint16_t startAtIndex) override;
 
  private:
+
+  // ---------------- Mode-Transition Delays ------------------------------------
+  static constexpr uint32_t RW_DELAY_OFF_TO_ON_MS = RwConfig::DELAY_OFF_TO_ON_MS;
+  static constexpr uint32_t RW_DELAY_ON_TO_NORMAL_MS = RwConfig::DELAY_ON_TO_NORMAL_MS;
+  static constexpr uint32_t STOP_DELAY_MS = RwConfig::STOP_DELAY_MS; 
+  
+  // ---------------- Mode-Transition retries -----------------------------------
+  static constexpr uint8_t STOP_RETRIES = RwConfig::STOP_RETRIES;  
+  static constexpr uint32_t STOP_RETRY_MS = RwConfig::STOP_RETRY_MS;  
+  static constexpr uint8_t START_RETRIES = RwConfig::START_RETRIES; 
+  static constexpr uint32_t START_RETRY_MS = RwConfig::START_RETRY_MS; 
+  static constexpr uint32_t POLL_BLOCK_MS = RwConfig::POLL_BLOCK_MS;
+    
   // ---------------- Mode machine states -------------------------------------
 
   // Shutdown
@@ -134,8 +148,6 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   uint32_t shutdownT0_{0};
   uint32_t lastStopTxMs_{0};
   uint8_t stopRetriesDone_{0};
-  static constexpr uint8_t STOP_RETRIES = 0;
-  static constexpr uint32_t STOP_RETRY_MS = 60; 
 
   // Startup
   bool startingUp_{false};
@@ -143,8 +155,7 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   uint8_t startupRetriesDone_{0};
   uint32_t startupT0_{0};
   uint32_t startupLastTxMs_{0};
-  static constexpr uint8_t  START_RETRIES  = 0;   
-  static constexpr uint32_t START_RETRY_MS = 60; 
+
   // ---------------- RX helpers ----------------------------------------------
   ReturnValue_t drainRxNow();
   ReturnValue_t drainRxIntoRing();
@@ -171,10 +182,9 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
 
   // ---------------- Poll block after external command -----------------------
   uint32_t lastExtCmdMs{0};
-  static constexpr uint32_t POLL_BLOCK_MS = 50;
 
   // ---------------- TC-driven STATUS routing --------------------------------
-  bool pendingTcStatusTm{false};  // only for echoing data back
+  bool pendingTcStatusTm{false}; 
   MessageQueueId_t pendingTcStatusReportedTo{MessageQueueIF::NO_QUEUE};
 
   // ---------------- Local datasets ------------------------------------------
@@ -186,9 +196,9 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
 
   // ---------------- FDIR thresholds / counts --------------------------------
   static constexpr int16_t STUCK_RPM_THRESH = RwConfig::STUCK_RPM_THRESH;
-  static constexpr uint8_t STUCK_RPM_COUNT  = RwConfig::STUCK_RPM_COUNT;
+  static constexpr uint8_t STUCK_RPM_COUNT = RwConfig::STUCK_RPM_COUNT;
   static constexpr int16_t HIGH_TORQUE_THRESH = RwConfig::HIGH_TORQUE_THRESH;
-  static constexpr uint8_t HIGH_TORQUE_COUNT  = RwConfig::HIGH_TORQUE_COUNT;
+  static constexpr uint8_t HIGH_TORQUE_COUNT = RwConfig::HIGH_TORQUE_COUNT;
 
   uint8_t stuckRpmCnt{0};
   uint8_t highTorqueCnt{0};
@@ -196,10 +206,9 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   // ---------------- RX ring buffer ------------------------------------------
   static constexpr std::size_t RX_RING_SIZE = RwConfig::RX_RING_SIZE;
   uint8_t rxStorage[RX_RING_SIZE] = {};
-  SharedRingBuffer rxRing{
-      /*objectId*/ RwConfig::RX_RING_OBJ_ID, rxStorage, RX_RING_SIZE,
-      /*overwriteOld*/ false,
-      /*maxExcessBytes*/ RwProtocol::STATUS_LEN - 1};
+  SharedRingBuffer rxRing{/*objectId*/ RwConfig::RX_RING_OBJ_ID, rxStorage, RX_RING_SIZE,
+                          /*overwriteOld*/ false,
+                          /*maxExcessBytes*/ RwProtocol::STATUS_LEN - 1};
 
   // ---------------- Parameter helper ----------------------------------------
   ParameterHelper parameterHelper{this};
@@ -207,5 +216,5 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
 
 // Debug on/off switch (set to 1 to enable verbose logging)
 #ifndef RW_VERBOSE
-#define RW_VERBOSE 1
+#define RW_VERBOSE 0
 #endif

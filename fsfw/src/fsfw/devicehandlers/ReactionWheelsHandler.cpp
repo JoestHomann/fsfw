@@ -7,6 +7,7 @@
 #include "RwEvents.h"
 #include "RwProtocol.h"
 #include "fsfw/action/ActionHelper.h"
+#include "fsfw/datapoollocal/ProvidesDataPoolSubscriptionIF.h"
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"
 #include "fsfw/ipc/MessageQueueIF.h"
 #include "fsfw/ipc/MutexIF.h"
@@ -14,10 +15,6 @@
 #include "fsfw/returnvalues/returnvalue.h"
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
 #include "fsfw/timemanager/Clock.h"
-#include "fsfw/datapoollocal/ProvidesDataPoolSubscriptionIF.h"
-
-// -------- Local constants ----------------------------------------------------
-static constexpr uint32_t COAST_WAIT_MS = 80;
 
 // -------- Construction -------------------------------------------------------
 ReactionWheelsHandler::ReactionWheelsHandler(object_id_t objectId, object_id_t comIF,
@@ -29,23 +26,20 @@ ReactionWheelsHandler::ReactionWheelsHandler(object_id_t objectId, object_id_t c
 
 // -------- Mode Handling: STARTUP --------------------------------
 void ReactionWheelsHandler::doStartUp() {
-  sif::info << "ReactionWheelsHandler: doStartUp()" << std::endl;
   if (!startingUp_) {
     startingUp_ = true;
     startupSent_ = false;
     startupRetriesDone_ = 0;
     Clock::getUptime(&startupT0_);
     startupLastTxMs_ = startupT0_;
-    statusAwaitCnt = -1;   
-    (void)drainRxNow(); 
+    statusAwaitCnt = -1;
+    (void)drainRxNow();
   }
-  
+  //sif::info << "ReactionWheelsHandler: doStartUp()" << std::endl;
 }
-
 
 // -------- Mode Handling: SHUTDOWN -------------------------------
 void ReactionWheelsHandler::doShutDown() {
-  sif::info << "ReactionWheelsHandler: doShutDown()" << std::endl;
   if (!shuttingDown_) {
     shuttingDown_ = true;
     stopSent_ = false;
@@ -53,21 +47,29 @@ void ReactionWheelsHandler::doShutDown() {
     Clock::getUptime(&shutdownT0_);
     lastStopTxMs_ = shutdownT0_;
   }
-  
+  //sif::info << "ReactionWheelsHandler: doShutDown()" << std::endl;
 }
 
-
-
-// -------- Mode change hook ---------------------------------------------------
+// -------- Mode change ---------------------------------------------------
 void ReactionWheelsHandler::modeChanged() {
-  Mode_t m{}; Submode_t s{};
+  Mode_t m{};
+  Submode_t s{};
   this->getMode(&m, &s);
   sif::info << "ReactionWheelsHandler: modeChanged -> " << static_cast<int>(m)
             << " (sub=" << static_cast<int>(s) << ")" << std::endl;
 
+  if (m == MODE_OFF) {
+    sif::info << "ReactionWheelsHandler: Mode OFF" << std::endl;
+  }
+
+  if (m == MODE_ON) {
+    sif::info << "ReactionWheelsHandler: Mode ON" << std::endl;
+    (void)drainRxNow(); // clear old bytes before starting
+  }
+
   if (m == MODE_NORMAL) {
-    sif::info << "ReactionWheelsHandler: NORMAL mode" << std::endl;
-    (void)drainRxNow();
+    sif::info << "ReactionWheelsHandler: Mode NORMAL" << std::endl;
+    (void)drainRxNow(); // clear old bytes before switching to NORMAL
     statusPollCnt = statusPollDivider;  // force first poll in NORMAL
   }
 }
@@ -121,7 +123,8 @@ ReturnValue_t ReactionWheelsHandler::drainRxIntoRing() {
       (void)rxRing.unlockRingBufferMutex();
       break;
     }
-    uint8_t* buf = nullptr; size_t sz = 0;
+    uint8_t* buf = nullptr;
+    size_t sz = 0;
     ReturnValue_t rd = communicationInterface->readReceivedMessage(comCookie, &buf, &sz);
     if (rd != returnvalue::OK || buf == nullptr || sz == 0) {
       (void)rxRing.unlockRingBufferMutex();
@@ -160,14 +163,14 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
   // Periodic STATUS poll
   if (++statusPollCnt >= statusPollDivider) {
     statusPollCnt = 0;
-    const size_t total = RwProtocol::buildStatusReq(txBuf, sizeof(txBuf));
+    const size_t total = RwProtocol::buildStatus(txBuf, sizeof(txBuf));
     if (total == 0) {
       *id = DeviceHandlerIF::NO_COMMAND_ID;
       return NOTHING_TO_SEND;
     }
-    rawPacket    = txBuf;
+    rawPacket = txBuf;
     rawPacketLen = total;
-    *id          = CMD_STATUS_POLL;
+    *id = CMD_STATUS_POLL;
     statusAwaitCnt = 0;
     return returnvalue::OK;
   }
@@ -187,20 +190,20 @@ ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandI
 
     // STATUS senden (einmalig + optionale Re-Trys)
     if (!startupSent_ || (retryWindow && startupRetriesDone_ < START_RETRIES)) {
-      const size_t total = RwProtocol::buildStatusReq(txBuf, sizeof(txBuf));
+      const size_t total = RwProtocol::buildStatus(txBuf, sizeof(txBuf));
       if (total != 0) {
-        rawPacket    = txBuf;
+        rawPacket = txBuf;
         rawPacketLen = total;
-        *id          = CMD_STATUS_POLL;   // erwartete STATUS-Antwort
+        *id = CMD_STATUS_POLL;  // erwartete STATUS-Antwort
         statusAwaitCnt = 0;
         startupSent_ = true;
         ++startupRetriesDone_;
         startupLastTxMs_ = now;
 #if RW_VERBOSE
-        sif::info << "RW: STARTUP STATUS sent (" << int(startupRetriesDone_)
-                  << "/" << int(START_RETRIES) << ")"<< std::endl;
+        sif::info << "RW: STARTUP STATUS sent (" << int(startupRetriesDone_) << "/"
+                  << int(START_RETRIES) << ")" << std::endl;
 #endif
-        return returnvalue::OK;           // wird jetzt gesendet
+        return returnvalue::OK;  // wird jetzt gesendet
       }
     }
 
@@ -221,20 +224,20 @@ ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandI
     if (!stopSent_ || (needRetryWindow && stopRetriesDone_ < STOP_RETRIES)) {
       const size_t total = RwProtocol::buildStop(txBuf, sizeof(txBuf));
       if (total != 0) {
-        rawPacket    = txBuf;
+        rawPacket = txBuf;
         rawPacketLen = total;
-        *id          = CMD_STOP;
+        *id = CMD_STOP;
         stopSent_ = true;
         ++stopRetriesDone_;
         lastStopTxMs_ = now;
 #if RW_VERBOSE
-        sif::info << "RW: STOP sent (" << int(stopRetriesDone_)
-                  << "/" << int(STOP_RETRIES) << ")"<< std::endl;
+        sif::info << "RW: STOP sent (" << int(stopRetriesDone_) << "/" << int(STOP_RETRIES) << ")"
+                  << std::endl;
 #endif
         return returnvalue::OK;
       }
     }
-    if ((now - shutdownT0_) >= COAST_WAIT_MS) {
+    if ((now - shutdownT0_) >= STOP_DELAY_MS) {
       shuttingDown_ = false;
       setMode(MODE_OFF);
     }
@@ -246,7 +249,6 @@ ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandI
   *id = DeviceHandlerIF::NO_COMMAND_ID;
   return NOTHING_TO_SEND;
 }
-
 
 // -------- TC -> wire command builder -----------------------------------------
 ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t deviceCommand,
@@ -260,7 +262,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       std::memcpy(&rpm, data, sizeof(rpm));
 
       int16_t lim = p_maxRpm > 0 ? p_maxRpm : RwConfig::MAX_RPM_DEFAULT;
-      if (rpm >  lim) rpm =  lim;
+      if (rpm > lim) rpm = lim;
       if (rpm < -lim) rpm = -lim;
 
       const size_t total = RwProtocol::buildSetSpeed(txBuf, sizeof(txBuf), rpm);
@@ -280,7 +282,7 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
 
       const int16_t lim = RwConfig::MAX_TORQUE_MNM_DEFAULT;
       if (lim > 0) {
-        if (tq >  lim) tq =  lim;
+        if (tq > lim) tq = lim;
         if (tq < -lim) tq = -lim;
       }
 
@@ -304,9 +306,9 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
     case CMD_STATUS: {
       // Allow TC-driven STATUS in MODE_ON/MODE_NORMAL alike
       (void)drainRxNow();  // clear stale bytes before asking
-      const size_t total = RwProtocol::buildStatusReq(txBuf, sizeof(txBuf));
+      const size_t total = RwProtocol::buildStatus(txBuf, sizeof(txBuf));
       if (total == 0) return returnvalue::FAILED;
-      rawPacket    = txBuf;
+      rawPacket = txBuf;
       rawPacketLen = total;
       statusAwaitCnt = 0;
       return returnvalue::OK;
@@ -319,9 +321,9 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
 
 // -------- Command/reply map --------------------------------------------------
 void ReactionWheelsHandler::fillCommandAndReplyMap() {
-  insertInCommandMap(CMD_SET_SPEED,   false, 0);
-  insertInCommandMap(CMD_SET_TORQUE,  false, 0);
-  insertInCommandMap(CMD_STOP,        false, 0);
+  insertInCommandMap(CMD_SET_SPEED, false, 0);
+  insertInCommandMap(CMD_SET_TORQUE, false, 0);
+  insertInCommandMap(CMD_STOP, false, 0);
 
   // Periodic/onboard poll with expected reply
   insertInCommandAndReplyMap(CMD_STATUS_POLL, 5, &replySet, RwProtocol::STATUS_LEN,
@@ -449,8 +451,8 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
 
   const uint8_t* pkt = replySet.raw.isValid() ? replySet.raw.value : packet;
 
-  const int16_t speed   = static_cast<int16_t>((pkt[2] << 8) | pkt[3]);
-  const int16_t torque  = static_cast<int16_t>((pkt[4] << 8) | pkt[5]);
+  const int16_t speed = static_cast<int16_t>((pkt[2] << 8) | pkt[3]);
+  const int16_t torque = static_cast<int16_t>((pkt[4] << 8) | pkt[5]);
   const uint8_t running = pkt[6];
 
   // Throttled status log
@@ -467,11 +469,11 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   hkSet.read();
   hkSet.setValidity(false, true);
 
-  hkSet.speedRpm.value     = speed;
-  hkSet.torque_mNm.value   = torque;
-  hkSet.running.value      = running;
-  hkSet.flags.value        = 0;
-  hkSet.crcErrCnt.value    = crcErrCnt;
+  hkSet.speedRpm.value = speed;
+  hkSet.torque_mNm.value = torque;
+  hkSet.running.value = running;
+  hkSet.flags.value = 0;
+  hkSet.crcErrCnt.value = crcErrCnt;
   hkSet.malformedCnt.value = malformedCnt;
 
   uint32_t ms = 0;
@@ -482,8 +484,7 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   const bool stuckCond = (running == 0) && (std::abs(static_cast<int>(speed)) > STUCK_RPM_THRESH);
   if (stuckCond) {
     if (++stuckRpmCnt >= STUCK_RPM_COUNT) {
-      triggerEvent(RwEvents::STUCK, static_cast<uint32_t>(speed),
-                   static_cast<uint32_t>(running));
+      triggerEvent(RwEvents::STUCK, static_cast<uint32_t>(speed), static_cast<uint32_t>(running));
       stuckRpmCnt = 0;
       hkSet.flags.value |= FLAG_STUCK;
     }
@@ -530,7 +531,7 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
 uint32_t ReactionWheelsHandler::getTransitionDelayMs(Mode_t from, Mode_t to) {
   if (from == MODE_OFF && to == MODE_ON) return RwConfig::DELAY_OFF_TO_ON_MS;
   if (from == MODE_ON && to == MODE_NORMAL) return RwConfig::DELAY_ON_TO_NORMAL_MS;
-  if (to == MODE_OFF && from != MODE_OFF) return STOP_RETRIES * STOP_RETRY_MS + COAST_WAIT_MS + 200;
+  if (to == MODE_OFF && from != MODE_OFF) return STOP_RETRIES * STOP_RETRY_MS + STOP_DELAY_MS + 200;
   if (to != from) return 1000;  // Fallback
   return 0;
 }
@@ -540,13 +541,16 @@ ReturnValue_t ReactionWheelsHandler::initializeLocalDataPool(localpool::DataPool
                                                              LocalDataPoolManager&) {
   localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::RAW_REPLY),
                            new PoolEntry<uint8_t>(RwProtocol::STATUS_LEN));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM),     new PoolEntry<int16_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm),    new PoolEntry<int16_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_RUNNING),       new PoolEntry<uint8_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_FLAGS),         new PoolEntry<uint16_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT),   new PoolEntry<uint32_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_MALFORMED_CNT), new PoolEntry<uint32_t>(1));
-  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS),  new PoolEntry<uint32_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM), new PoolEntry<int16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm), new PoolEntry<int16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_RUNNING), new PoolEntry<uint8_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_FLAGS), new PoolEntry<uint16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT),
+                           new PoolEntry<uint32_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_MALFORMED_CNT),
+                           new PoolEntry<uint32_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS),
+                           new PoolEntry<uint32_t>(1));
   return returnvalue::OK;
 }
 
@@ -602,7 +606,7 @@ ReturnValue_t ReactionWheelsHandler::getParameter(uint8_t domainId, uint8_t para
 
 // -------- Dataset routing ----------------------------------------------------
 LocalPoolDataSetBase* ReactionWheelsHandler::getDataSetHandle(sid_t sid) {
-  if (sid.ownerSetId == DATASET_ID_HK)  return &hkSet;
+  if (sid.ownerSetId == DATASET_ID_HK) return &hkSet;
   if (sid.ownerSetId == DATASET_ID_RAW) return &replySet;
   return DeviceHandlerBase::getDataSetHandle(sid);
 }

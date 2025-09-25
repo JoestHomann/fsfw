@@ -26,7 +26,7 @@ namespace RwProtocol {
   enum class CmdId : uint8_t {
     SET_SPEED   = 0x01, // payload p0..p1: int16 rpm (big-endian)
     STOP        = 0x02, // payload p0..p1: 0x0000
-    STATUS_REQ  = 0x03, // payload p0..p1: 0x0000
+    STATUS      = 0x03, // payload p0..p1: 0x0000
     SET_TORQUE  = 0x04  // payload p0..p1: int16 torque_mNm (big-endian)
   };
 
@@ -46,7 +46,7 @@ namespace RwProtocol {
   size_t buildSetSpeed(uint8_t* out, size_t cap, int16_t rpm);  // Build SET_SPEED command
   size_t buildSetTorque(uint8_t* out, size_t cap, int16_t torque_mNm);  // Build SET_TORQUE command
   size_t buildStop(uint8_t* out, size_t cap); // Build STOP command
-  size_t buildStatusReq(uint8_t* out, size_t cap);  // Build STATUS request command
+  size_t buildStatus(uint8_t* out, size_t cap);  // Build STATUS request command
 
   // --- CRC helpers ----------------------------------------------------------
   uint16_t calcCrc16(const uint8_t* buf, size_t len); // Calculate CRC16-CCITT (FALSE)

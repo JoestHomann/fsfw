@@ -148,14 +148,66 @@ def handle_tm_acs_typed_132(data: bytes, acs_oid: int):
     return True
 
 def handle_tm_hk_3_25(data: bytes, expect_oid: int):
-    """Show periodic HK reports (Service 3 / Sub 25). We print SID if we can spot the OID."""
-    oid_be = expect_oid.to_bytes(4, "big")
-    pos = data.find(oid_be, 9)
-    if pos != -1 and pos + 6 <= len(data):
-        set_id = int.from_bytes(data[pos+4:pos+6], "big")
-        print(f"[TM 3/25] Periodic HK  SID: oid=0x{expect_oid:08X}, set=0x{set_id:04X}, len={len(data)}")
-    else:
+    """Decode Periodic HK reports (Service 3 / Sub 25) for the RW handler.
+
+    Observed RW payload layout AFTER SID (OID+setId):
+      0x00CB (DATASET_ID_HK) |
+      speed(i16) | torque(i16) | running(u8) | flags(u16) |
+      crcErrCnt(u32) | malformedCnt(u32) | sample(u16) | timestampMs(u32)
+
+    We do NOT strip a trailing CRC here; we just read the expected 23 bytes
+    (2 for 0x00CB + 21 for fields) if available.
+    """
+    def u16(b, i, signed=False): return int.from_bytes(b[i:i+2], "big", signed=signed)
+    def i16(b, i): return int.from_bytes(b[i:i+2], "big", signed=True)
+    def u32(b, i): return int.from_bytes(b[i:i+4], "big", signed=False)
+
+    # Accept both your RW OID and the 0x4060 you've seen in dumps.
+    oid_candidates = (expect_oid, 0x00004060)
+
+    pos = -1
+    found_oid = None
+    for cand in oid_candidates:
+        p = data.find(cand.to_bytes(4, "big"), 9)
+        if p != -1:
+            found_oid, pos = cand, p
+            break
+
+    if found_oid is None or pos + 6 > len(data):
         print(f"[TM 3/25] Periodic HK (len={len(data)})")
+        return
+
+    set_id = u16(data, pos + 4)
+    print(f"[TM 3/25] Periodic HK  SID: oid=0x{found_oid:08X}, set=0x{set_id:04X}, len={len(data)}")
+
+    # Payload right after SID; read as much as is available
+    payload = data[pos + 6 : ]
+
+    # Need at least: 2 (dsId) + 21 (fields) = 23 bytes
+    if len(payload) < 23:
+        hex_dump = " ".join(f"{x:02X}" for x in payload)
+        print(f"    (payload too short for RW HK layout) hex={hex_dump}")
+        return
+
+    ds_id = u16(payload, 0)
+    if ds_id != 0x00CB:
+        hex_dump = " ".join(f"{x:02X}" for x in payload[:32])
+        print(f"    (unexpected dataset id 0x{ds_id:04X}) payload(hex)={hex_dump}")
+        return
+
+    i = 2
+    speed   = i16(payload, i); i += 2
+    torque  = i16(payload, i); i += 2
+    running = payload[i];      i += 1
+    flags   = u16(payload, i); i += 2
+    crc_cnt = u32(payload, i); i += 4
+    mal_cnt = u32(payload, i); i += 4
+    sample  = u16(payload, i); i += 2
+    ts_ms   = u32(payload, i); i += 4
+
+    print(f"    RW HK: speed={speed} rpm, torque={torque} mNm, running={running}, "
+          f"flags=0x{flags:04X}, crcErrCnt={crc_cnt}, malformedCnt={mal_cnt}, "
+          f"sample={sample}, tsMs={ts_ms}")
 
 def handle_tm(data: bytes, rw_oid: int, acs_oid: int):
     """Decode minimal PUS TM set."""
@@ -177,12 +229,12 @@ def handle_tm(data: bytes, rw_oid: int, acs_oid: int):
 
     # Periodic HK
     if svc == SVC_HK and sub == SUB_HK_REPORT_PERIODIC:
-        handle_tm_hk_3_25(data, rw_oid)  # RW HK; adjust if you broadcast ACS HK via Svc3 too
+        handle_tm_hk_3_25(data, rw_oid)  # decode RW HK content
         return
 
     # Generic print for other packets
     if PRINT_UNKNOWN_TM or svc in (SERVICE, SVC_HK):
-        print(f"TM: svc={svc} subsvc={sub} len={len(data)}")
+        print(f"TM svc={svc} subsvc={sub} len={len(data)}")
 
 # ---------- Background RX thread ----------
 def rx_loop(sock: socket.socket, get_ids_callable, stop_event: threading.Event):
@@ -346,7 +398,7 @@ def main():
                 try:
                     rpm = int(parts[1])
                     print(f"Sending SET_SPEED {rpm} rpm to RW 0x{oids['rw']:08X}")
-                    rw_set_speed(sock, oids["rw"], rpm, next(seq))
+                    rw_set_speed(sock, oids['rw'], rpm, next(seq))
                 except ValueError:
                     print("Invalid RPM")
 
@@ -357,17 +409,17 @@ def main():
                 try:
                     tq = int(parts[1])
                     print(f"Sending SET_TORQUE {tq} mNm to RW 0x{oids['rw']:08X}")
-                    rw_set_torque(sock, oids["rw"], tq, next(seq))
+                    rw_set_torque(sock, oids['rw'], tq, next(seq))
                 except ValueError:
                     print("Invalid torque")
 
             elif cmd == "status":
                 print(f"Requesting STATUS from RW 0x{oids['rw']:08X}")
-                rw_status(sock, oids["rw"], next(seq))
+                rw_status(sock, oids['rw'], next(seq))
 
             elif cmd == "stop":
                 print(f"Sending STOP to RW 0x{oids['rw']:08X}")
-                rw_stop(sock, oids["rw"], next(seq))
+                rw_stop(sock, oids['rw'], next(seq))
 
             elif cmd == "mode":
                 if len(parts) < 2:
@@ -384,7 +436,7 @@ def main():
                     continue
                 mode_val = MODE_NAMES[name]
                 print(f"Sending SET_MODE {name.upper()} (mode={mode_val}, sub={sub}) to RW 0x{oids['rw']:08X}")
-                rw_set_mode(sock, oids["rw"], mode_val, sub, next(seq))
+                rw_set_mode(sock, oids['rw'], mode_val, sub, next(seq))
 
             elif cmd == "acs_enable":
                 if len(parts) < 2 or parts[1] not in ("0", "1"):
@@ -392,7 +444,7 @@ def main():
                     continue
                 en = (parts[1] == "1")
                 print(f"Sending ACS_SET_ENABLE {int(en)} to ACS 0x{oids['acs']:08X}")
-                acs_set_enable(sock, oids["acs"], en, next(seq))
+                acs_set_enable(sock, oids['acs'], en, next(seq))
 
             elif cmd in ("att", "acs_att", "attitude"):
                 # att q0 q1 q2 q3  (float32 BE, auto-normalized)
@@ -407,7 +459,7 @@ def main():
                 n = math.sqrt(sum(v*v for v in q))
                 qn = tuple((v / n) if n > 1e-9 else (1.0 if i == 0 else 0.0) for i, v in enumerate(q))
                 print(f"Sending ACS_SET_TARGET q={qn} to ACS 0x{oids['acs']:08X}")
-                acs_set_target(sock, oids["acs"], qn, next(seq))
+                acs_set_target(sock, oids['acs'], qn, next(seq))
 
             elif cmd == "listen":
                 secs = float(parts[1]) if len(parts) >= 2 else 5.0
