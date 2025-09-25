@@ -22,7 +22,6 @@ SUB_ACS_SET_ENABLE   = 140
 SUB_ACS_SET_TARGET   = 141   # NEW
 
 # Subservices (TM)
-SUB_TM_STATUS_LEGACY = 130   # legacy compact TM (RW)
 SUB_TM_STATUS_TYPED  = 131   # typed RW status (v1)
 SUB_TM_ACS_TYPED     = 132   # typed ACS HK (v1)
 
@@ -108,7 +107,8 @@ def handle_tm_typed_rw_131(data: bytes, rw_oid: int):
     if start == -1 or start + 28 > len(data):
         return False
     try:
-        # Example layout (adjust if you change onboard format):
+        # Layout: ver(1) | oid(4) | speed(i16) | torque(i16) | running(u8)
+        #         | flags(u16) | err(u16) | crc_cnt(u32) | mal_cnt(u32) | ts_ms(u32) | sample(u16)
         ver, oid_be, speed, torque, running, flags, err, crc_cnt, mal_cnt, ts_ms, sample = \
             struct.unpack(">B I h h B H H I I I H", data[start:start+28])
     except struct.error:
@@ -119,18 +119,6 @@ def handle_tm_typed_rw_131(data: bytes, rw_oid: int):
         f"flags=0x{flags:04X} err=0x{err:04X}  "
         f"crcErrCnt={crc_cnt} malformedCnt={mal_cnt} tsMs={ts_ms} sample={sample}"
     )
-    return True
-
-def handle_tm_legacy_rw_130(data: bytes, rw_oid: int):
-    """Decode legacy compact TM (220/130): OID(4) + speed(i16) + torque(i16) + running(u8)."""
-    marker = rw_oid.to_bytes(4, "big")
-    start = data.find(marker, 9)
-    if start == -1 or start + 9 > len(data):
-        return False
-    speed   = int.from_bytes(data[start+4:start+6], "big", signed=True)
-    torque  = int.from_bytes(data[start+6:start+8], "big", signed=True)
-    running = data[start+8]
-    print(f"[TM 220/130] oid=0x{rw_oid:08X}  speed={speed} rpm  torque={torque} mNm  running={running}")
     return True
 
 def handle_tm_acs_typed_132(data: bytes, acs_oid: int):
@@ -182,12 +170,9 @@ def handle_tm(data: bytes, rw_oid: int, acs_oid: int):
         if handle_tm_acs_typed_132(data, acs_oid):
             return
 
-    # Then typed/legacy RW
+    # Then typed RW
     if svc == SERVICE and sub == SUB_TM_STATUS_TYPED:
         if handle_tm_typed_rw_131(data, rw_oid):
-            return
-    if svc == SERVICE and sub == SUB_TM_STATUS_LEGACY:
-        if handle_tm_legacy_rw_130(data, rw_oid):
             return
 
     # Periodic HK

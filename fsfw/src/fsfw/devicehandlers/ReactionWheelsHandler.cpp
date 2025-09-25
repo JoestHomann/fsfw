@@ -123,7 +123,7 @@ void ReactionWheelsHandler::modeChanged() {
             << " (sub=" << static_cast<int>(s) << ")" << std::endl;
 
   if (m == MODE_NORMAL) {
-    (void)drainRxNow();               // clear any stale bytes
+    (void)drainRxNow();                 // clear any stale bytes
     statusPollCnt = statusPollDivider;  // force next buildNormal() to poll immediately
   }
 }
@@ -497,7 +497,7 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
       triggerEvent(RwEvents::STUCK, static_cast<uint32_t>(speed),
                    static_cast<uint32_t>(running));
       stuckRpmCnt = 0;
-      hkSet.flags.value |= 0x0001;
+      hkSet.flags.value |= FLAG_STUCK;
     }
   } else {
     stuckRpmCnt = 0;
@@ -508,7 +508,7 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
     if (++highTorqueCnt >= HIGH_TORQUE_COUNT) {
       triggerEvent(RwEvents::TORQUE_HIGH, static_cast<uint32_t>(torque), 0);
       highTorqueCnt = 0;
-      hkSet.flags.value |= 0x0002;
+      hkSet.flags.value |= FLAG_TORQUE_HIGH;
     }
   } else {
     highTorqueCnt = 0;

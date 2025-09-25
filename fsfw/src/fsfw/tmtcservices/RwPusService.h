@@ -20,24 +20,24 @@
 //   141 = ACS_SET_TARGET  (AppData: ACS_OID(4) | f32 q[4] big-endian)
 //
 // Telemetry (TM):
-//   220/130 = TM_STATUS       (AppData from parsed wheel STATUS)
-//   220/132 = TM_ACS_HK_TYPED (AppData: ACS_OID(4) | u8 ver | u8 enabled |
-//                              float Kd[3] | float tauDes[3] | float tauWheelCmd[4] | u32 dtMs)
-
+//   220/131 = TM_STATUS_TYPED (v1)
+//             AppData: ver(1)=1 | oid(4) | speed(i16) | torque(i16) | running(u8)
+//                       | flags(u16) | err(u16) | crcCnt(u32) | malCnt(u32) | tsMs(u32) | sample(u16)
+//   220/132 = TM_ACS_HK_TYPED  (ACS typed HK)
 
 class RwPusService : public CommandingServiceBase {
  public:
   // Subservice IDs used by this PUS service
   enum Subservice : uint8_t {
-    SET_SPEED       = 1,
-    STOP            = 2,
-    STATUS          = 3,
-    SET_TORQUE      = 4,
-    SET_MODE        = 10,
-    TM_STATUS       = 130,
-    TM_ACS_HK_TYPED = 132,
-    ACS_SET_ENABLE  = 140,
-    ACS_SET_TARGET  = 141
+    SET_SPEED        = 1,
+    STOP             = 2,
+    STATUS           = 3,
+    SET_TORQUE       = 4,
+    SET_MODE         = 10,
+    TM_STATUS_TYPED  = 131,
+    TM_ACS_HK_TYPED  = 132,
+    ACS_SET_ENABLE   = 140,
+    ACS_SET_TARGET   = 141
   };
 
   // Constructor
@@ -68,7 +68,7 @@ class RwPusService : public CommandingServiceBase {
   ReturnValue_t handleReply(const CommandMessage* reply, Command_t previousCommand, uint32_t* state,
                             CommandMessage* next, object_id_t objectId, bool* isStep) override;
 
-  // Parse RW status payload from store and emit TM_STATUS (220/130)
+  // Parse RW status payload from store and emit TM_STATUS_TYPED (220/131)
   ReturnValue_t handleDataReplyAndEmitTm(store_address_t sid, object_id_t objectId);
 
   // Handle unrequested replies and emit TM if possible

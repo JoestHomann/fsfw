@@ -4,7 +4,7 @@
 #include <cstring>
 #include <iomanip>
 
-#include "fsfw/devicehandlers/RwProtocol.h" 
+#include "fsfw/devicehandlers/RwProtocol.h"
 #include "example_common/mission/acs/AcsController.h"
 #include "commonObjects.h"
 #include "fsfw/action/ActionMessage.h"
@@ -18,6 +18,7 @@
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
 #include "fsfw/storagemanager/StorageManagerIF.h"
 #include "fsfw/storagemanager/storeAddress.h"
+#include "fsfw/timemanager/Clock.h"
 
 namespace {
 
@@ -55,6 +56,12 @@ static inline void be_store_u32(uint8_t* p, uint32_t v) {
   p[1] = static_cast<uint8_t>((v >> 16) & 0xFF);
   p[2] = static_cast<uint8_t>((v >> 8) & 0xFF);
   p[3] = static_cast<uint8_t>( v       & 0xFF);
+}
+
+// Store big-endian 16-bit unsigned
+static inline void be_store_u16(uint8_t* p, uint16_t v) {
+  p[0] = static_cast<uint8_t>((v >> 8) & 0xFF);
+  p[1] = static_cast<uint8_t>( v       & 0xFF);
 }
 
 // Store big-endian float32
@@ -305,7 +312,7 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
   }
 }
 
-// Read a stored reply payload, try to parse a STATUS frame and emit typed TM
+// Read a stored reply payload, try to parse a STATUS frame and emit typed TM (220/131)
 ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object_id_t objectId) {
   if (sid.raw == StorageManagerIF::INVALID_ADDRESS) {
 #if RW_PUS_VERBOSE
@@ -355,21 +362,31 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
     if (!ok) {
       rv = returnvalue::FAILED;
     } else {
-      // Build typed TM app data:
-      // [object_id(4) | speed(2) | torque(2) | running(1)]
-      uint8_t app[9];
-      app[0] = static_cast<uint8_t>((objectId >> 24) & 0xFF);
-      app[1] = static_cast<uint8_t>((objectId >> 16) & 0xFF);
-      app[2] = static_cast<uint8_t>((objectId >> 8) & 0xFF);
-      app[3] = static_cast<uint8_t>(objectId & 0xFF);
-      app[4] = static_cast<uint8_t>((st.speedRpm >> 8) & 0xFF);
-      app[5] = static_cast<uint8_t>( st.speedRpm       & 0xFF);
-      app[6] = static_cast<uint8_t>((st.torqueMnM >> 8) & 0xFF);
-      app[7] = static_cast<uint8_t>( st.torqueMnM       & 0xFF);
-      app[8] = st.running;
+      // Build typed TM v1 (28 bytes):
+      // ver(1)=1 | oid(4) | speed(i16) | torque(i16) | running(u8)
+      // | flags(u16)=0 | err(u16)=0 | crcCnt(u32)=0 | malCnt(u32)=0 | tsMs(u32)=uptime | sample(u16)++
+      uint8_t app[28] = {};
+      size_t off = 0;
+      uint32_t tsMs = 0;
+      (void)Clock::getUptime(&tsMs);
+      static uint16_t sample = 0;
 
-      const auto prv =
-          tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_STATUS), app, sizeof(app));
+      app[off++] = 1;  // version
+      be_store_u32(&app[off], static_cast<uint32_t>(objectId)); off += 4;
+      app[off++] = static_cast<uint8_t>((st.speedRpm >> 8) & 0xFF);
+      app[off++] = static_cast<uint8_t>( st.speedRpm       & 0xFF);
+      app[off++] = static_cast<uint8_t>((st.torqueMnM >> 8) & 0xFF);
+      app[off++] = static_cast<uint8_t>( st.torqueMnM       & 0xFF);
+      app[off++] = st.running;
+      be_store_u16(&app[off], 0); off += 2;      // flags
+      be_store_u16(&app[off], 0); off += 2;      // err
+      be_store_u32(&app[off], 0); off += 4;      // crcCnt (unknown here)
+      be_store_u32(&app[off], 0); off += 4;      // malCnt (unknown here)
+      be_store_u32(&app[off], tsMs); off += 4;   // timestamp ms
+      be_store_u16(&app[off], sample++); off += 2;
+
+      const auto prv = tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_STATUS_TYPED),
+                                                app, off);
       rv = (prv == returnvalue::OK) ? tmHelper.storeAndSendTmPacket() : prv;
     }
   } else {
@@ -384,7 +401,7 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
   return rv;
 }
 
-// Handle replies from handlers, progress multi-step states, and complete TCs when ready
+// Handle replies from handlers, progress state machine, and complete TCs when ready
 ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, uint32_t* state,
                                         CommandMessage*, object_id_t objectId, bool* isStep) {
 #if RW_PUS_VERBOSE

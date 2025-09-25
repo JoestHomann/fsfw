@@ -95,9 +95,9 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   // ---------------- Lifecycle ------------------------------------------------
   ReactionWheelsHandler(object_id_t objectId, object_id_t comIF, CookieIF* cookie);
 
-  void doStartUp() override;    // set MODE_NORMAL
-  void doShutDown() override;   // set MODE_OFF
-  void modeChanged() override;  // log mode change
+  void doStartUp() override;    // enter MODE_ON with quick probe handshake
+  void doShutDown() override;   // STOP & enter MODE_OFF
+  void modeChanged() override;  // log mode change and force initial poll in NORMAL
 
   // ---------------- DeviceHandlerBase hooks ---------------------------------
   ReturnValue_t buildNormalDeviceCommand(DeviceCommandId_t* id) override;      // periodic/TC polls
@@ -156,7 +156,7 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
 
   // ---------------- Poll block after external command ---------------------
   uint32_t lastExtCmdMs{0};                        // timestamp of last TC sent
-  static constexpr uint32_t POLL_BLOCK_MS = 50;  // block polls for 50 ms after TC
+  static constexpr uint32_t POLL_BLOCK_MS = 50;    // block polls for 50 ms after TC
 
   // ---------------- TC-driven STATUS routing --------------------------------
   bool pendingTcStatusTm{false};  // set when TC requested STATUS
@@ -170,10 +170,10 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   int16_t p_maxRpm{RwConfig::MAX_RPM_DEFAULT};  // limit for SET_SPEED
 
   // ---------------- FDIR thresholds / counts --------------------------------
-  static constexpr int16_t STUCK_RPM_THRESH = RwConfig::STUCK_RPM_THRESH;  // speed threshold for stuck check
-  static constexpr uint8_t STUCK_RPM_COUNT = RwConfig::STUCK_RPM_COUNT;  // count for stuck check
-  static constexpr int16_t HIGH_TORQUE_THRESH = RwConfig::HIGH_TORQUE_THRESH;  // torque safety threshold
-  static constexpr uint8_t HIGH_TORQUE_COUNT = RwConfig::HIGH_TORQUE_COUNT;  // count for torque safety
+  static constexpr int16_t STUCK_RPM_THRESH = RwConfig::STUCK_RPM_THRESH;   // speed threshold
+  static constexpr uint8_t STUCK_RPM_COUNT  = RwConfig::STUCK_RPM_COUNT;    // debounce count
+  static constexpr int16_t HIGH_TORQUE_THRESH = RwConfig::HIGH_TORQUE_THRESH;  // torque threshold
+  static constexpr uint8_t HIGH_TORQUE_COUNT  = RwConfig::HIGH_TORQUE_COUNT;   // debounce count
 
   uint8_t stuckRpmCnt{0};    // Counter for stuck detection
   uint8_t highTorqueCnt{0};  // Counter for high torque
