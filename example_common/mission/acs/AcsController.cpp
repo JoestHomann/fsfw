@@ -238,9 +238,12 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
   clamp3_(tauDes, cfg_.limits.torqueMax_mNm);
   tauDes_ = {tauDes[0], tauDes[1], tauDes[2]};
 
-  // Optional verbose debug line each loop ------>>>USE #define!!!!!!!!!!
-  if (cfg_.debug.verbose) {
-    const float eNorm = std::sqrt(e[0]*e[0] + e[1]*e[1] + e[2]*e[2]);
+  // Debug line every 10 control-loop iterations
+#if ACS_VERBOSE
+  static uint32_t dbgCtr = 0;
+  if (++dbgCtr >= 10) {
+    dbgCtr = 0;
+    const float eNorm  = std::sqrt(e[0]*e[0] + e[1]*e[1] + e[2]*e[2]);
     const float angDeg = 2.0f * std::asin(std::min(1.0f, 0.5f * eNorm)) * 180.0f / PI_F;
     sif::info << std::fixed << std::setprecision(3)
               << "ACS dbg: |e|=" << angDeg << " deg, "
@@ -252,6 +255,7 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
               << "tauDes=["      << tauDes_[0] << "," << tauDes_[1] << "," << tauDes_[2] << "] mNm"
               << std::endl;
   }
+#endif
 
   // 9) Allocation: body torque -> per-wheel torques [mNm]
   float tauW[4] = {0,0,0,0};

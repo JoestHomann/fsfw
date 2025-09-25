@@ -15,15 +15,15 @@
 #include "fsfw/parameters/ParameterHelper.h"
 #include "fsfw/parameters/ParameterWrapper.h"
 
-/**
- * ReactionWheelsHandler
- * - Supports torque and speed commands (mNm, RPM).
- * - Periodically polls STATUS frames and publishes HK into local data pool.
- * - Provides TC-driven immediate STATUS polling.
- */
+// ReactionWheelsHandler
+// - Supports torque and speed commands (mNm, RPM).
+// - Periodically polls STATUS frames and publishes HK into local data pool.
+// - Provides TC-driven immediate STATUS polling.
+
 class ReactionWheelsHandler : public DeviceHandlerBase {
  public:
-  // Internal command IDs (must match wire protocol)
+  // ---------------- Command / Reply IDs -------------------------------------
+  // Wire-protocol aligned command IDs
   enum DeviceCmd : DeviceCommandId_t {
     CMD_SET_SPEED   = 0x01,
     CMD_STOP        = 0x02,
@@ -35,25 +35,25 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   // Unified internal reply ID for polled STATUS
   enum ReplyId : DeviceCommandId_t { REPLY_STATUS_POLL = 0x2002 };
 
-  // Parameters (Domain = 0x42)
+  // ---------------- Parameter service ---------------------------------------
   static constexpr uint8_t PARAM_DOMAIN = 0x42;
   enum class ParamId : uint8_t {
-    MAX_RPM        = 1,  // int16
-    MAX_SLEW_RPM_S = 2,  // uint16
-    POLL_DIVIDER   = 3   // uint32
+    MAX_RPM        = 1,  
+    MAX_SLEW_RPM_S = 2,  
+    POLL_DIVIDER   = 3
   };
 
-  // Local pool IDs
+  // ---------------- Local pool layout ---------------------------------------
   enum class PoolIds : lp_id_t {
     RAW_REPLY        = 1,
-    HK_SPEED_RPM     = 2, // int16
-    HK_TORQUE_mNm    = 3, // int16 (measured)
-    HK_RUNNING       = 4, // uint8
-    HK_FLAGS         = 5, // uint16
-    HK_ERROR         = 6, // uint16
-    HK_CRC_ERR_CNT   = 7, // uint32
-    HK_MALFORMED_CNT = 8, // uint32
-    HK_TIMESTAMP_MS  = 9  // uint32
+    HK_SPEED_RPM     = 2, 
+    HK_TORQUE_mNm    = 3, 
+    HK_RUNNING       = 4, 
+    HK_FLAGS         = 5, 
+    HK_ERROR         = 6,
+    HK_CRC_ERR_CNT   = 7,
+    HK_MALFORMED_CNT = 8,
+    HK_TIMESTAMP_MS  = 9
   };
 
   // Dataset IDs
@@ -62,7 +62,7 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
 
   // RAW reply dataset (keeps last STATUS frame for debugging)
   struct RwReplySet : public LocalDataSet {
-    LocalPoolVector<uint8_t, RwProtocol::STATUS_LEN> raw;
+    LocalPoolVector<uint8_t, RwProtocol::STATUS_LEN> raw; // last raw STATUS frame
     explicit RwReplySet(HasLocalDataPoolIF* owner)
         : LocalDataSet(owner, DATASET_ID_RAW, 1),
           raw(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::RAW_REPLY), this) {}
@@ -70,14 +70,14 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
 
   // HK dataset snapshot
   struct RwHkSet : public LocalDataSet {
-    LocalPoolVariable<int16_t>  speedRpm;
-    LocalPoolVariable<int16_t>  torque_mNm;
-    LocalPoolVariable<uint8_t>  running;
-    LocalPoolVariable<uint16_t> flags;
-    LocalPoolVariable<uint16_t> error;
-    LocalPoolVariable<uint32_t> crcErrCnt;
-    LocalPoolVariable<uint32_t> malformedCnt;
-    LocalPoolVariable<uint32_t> timestampMs;
+    LocalPoolVariable<int16_t>  speedRpm;      // RW wheel speed
+    LocalPoolVariable<int16_t>  torque_mNm;    // RW torque
+    LocalPoolVariable<uint8_t>  running;       // 1 if wheel reports running
+    LocalPoolVariable<uint16_t> flags;         // FDIR flags
+    LocalPoolVariable<uint16_t> error;         // optional error code
+    LocalPoolVariable<uint32_t> crcErrCnt;     // CRC errors seen
+    LocalPoolVariable<uint32_t> malformedCnt;  // malformed frames seen
+    LocalPoolVariable<uint32_t> timestampMs;   // reception timestamp
 
     static constexpr uint16_t HK_VAR_COUNT = 8;
 
@@ -93,29 +93,31 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
           timestampMs(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS), this) {}
   };
 
-  // Transition delays
+  // ---------------- Transition delays ---------------------------------------
   static constexpr uint32_t RW_DELAY_OFF_TO_ON_MS    = RwConfig::DELAY_OFF_TO_ON_MS;
   static constexpr uint32_t RW_DELAY_ON_TO_NORMAL_MS = RwConfig::DELAY_ON_TO_NORMAL_MS;
 
+  // ---------------- Lifecycle ------------------------------------------------
   ReactionWheelsHandler(object_id_t objectId, object_id_t comIF, CookieIF* cookie);
 
-  // DeviceHandlerBase interface
-  void doStartUp() override;
-  void doShutDown() override;
-  void modeChanged() override;
+  void doStartUp() override;                      // set MODE_NORMAL
+  void doShutDown() override;                     // set MODE_OFF
+  void modeChanged() override;                    // log mode change
 
-  ReturnValue_t buildNormalDeviceCommand(DeviceCommandId_t* id) override;
-  ReturnValue_t buildTransitionDeviceCommand(DeviceCommandId_t* id) override;
-  ReturnValue_t buildCommandFromCommand(DeviceCommandId_t deviceCommand, const uint8_t* data,
-                                        size_t len) override;
-  ReturnValue_t scanForReply(const uint8_t* start, size_t len, DeviceCommandId_t* foundId,
-                             size_t* foundLen) override;
-  ReturnValue_t interpretDeviceReply(DeviceCommandId_t id, const uint8_t* packet) override;
-  uint32_t getTransitionDelayMs(Mode_t from, Mode_t to) override;
+  // ---------------- DeviceHandlerBase hooks ---------------------------------
+  ReturnValue_t buildNormalDeviceCommand(DeviceCommandId_t* id) override;      // periodic/TC polls
+  ReturnValue_t buildTransitionDeviceCommand(DeviceCommandId_t* id) override;  // none
+  ReturnValue_t buildCommandFromCommand(DeviceCommandId_t deviceCommand,
+                                        const uint8_t* data, size_t len) override; // build wire cmd
+  ReturnValue_t scanForReply(const uint8_t* start, size_t len,
+                             DeviceCommandId_t* foundId, size_t* foundLen) override; // parse/ring
+  ReturnValue_t interpretDeviceReply(DeviceCommandId_t id,
+                                     const uint8_t* packet) override; // update HK/FDIR
+  uint32_t getTransitionDelayMs(Mode_t from, Mode_t to) override;     // delays from config
 
   ReturnValue_t initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
-                                        LocalDataPoolManager& poolManager) override;
-  void fillCommandAndReplyMap() override;
+                                        LocalDataPoolManager& poolManager) override; // pool layout
+  void fillCommandAndReplyMap() override;                                            // DH maps
 
   // Subscribe periodic HK after task creation
   ReturnValue_t initializeAfterTaskCreation() override;
@@ -134,67 +136,70 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
                              uint16_t startAtIndex) override;
 
  private:
-  // RX helpers
-  ReturnValue_t drainRxNow();
-  ReturnValue_t drainRxIntoRing();
-  void reportProtocolIssuesInWindow(const uint8_t* buf, size_t n);
+  // ---------------- RX helpers ----------------------------------------------
+  ReturnValue_t drainRxNow();                       // drop a few stale frames from COM IF
+  ReturnValue_t drainRxIntoRing();                  // pull available bytes into ring
+  void reportProtocolIssuesInWindow(const uint8_t* buf, size_t n); // count CRC/malformed
 
-  // Error bookkeeping
-  void onCrcError();
-  void onMalformed();
+  // ---------------- Error bookkeeping ---------------------------------------
+  void onCrcError();                                // bump CRC error count and maybe event
+  void onMalformed();                               // bump malformed count and maybe event
 
-  // TX buffer (frame to be sent)
-  uint8_t txBuf[RwProtocol::CMD_LEN] = {};
+  // ---------------- TX buffer ------------------------------------------------
+  uint8_t txBuf[RwProtocol::CMD_LEN] = {};          // last command frame to send
 
-  // Polling / timeout supervision
-  uint32_t statusPollCnt{0};
-  uint32_t statusPollDivider{RwConfig::STATUS_POLL_DIVIDER_DEFAULT};
-  static constexpr uint8_t STATUS_TIMEOUT_CYCLES = RwConfig::STATUS_TIMEOUT_CYCLES;
-  int8_t statusAwaitCnt{-1};
+  // ---------------- Polling / timeout supervision ---------------------------
+  uint32_t statusPollCnt{0};                        // poll divider counter
+  uint32_t statusPollDivider{RwConfig::STATUS_POLL_DIVIDER_DEFAULT}; // polls every N cycles
+  static constexpr uint8_t STATUS_TIMEOUT_CYCLES = RwConfig::STATUS_TIMEOUT_CYCLES; // wait cycles
+  int8_t statusAwaitCnt{-1};                        // >=0 means waiting for STATUS reply
 
-  // Nach externen Kommandos (Torque/Speed/Stop) Polls kurz hemmen
-  uint32_t lastExtCmdMs{0};
-  static constexpr uint32_t POLL_INHIBIT_MS = 50;  // 50 ms Poll-Sperre nach ext. Cmd
+  // ---------------- Poll inhibit after external command ---------------------
+  uint32_t lastExtCmdMs{0};                         // timestamp of last TC sent
+  static constexpr uint32_t POLL_INHIBIT_MS = 50;   // block polls for 50 ms after TC
 
-  // TC-driven STATUS reply routing
-  bool             pendingTcStatusTm{false};
-  MessageQueueId_t pendingTcStatusReportedTo{MessageQueueIF::NO_QUEUE};
+  // ---------------- TC-driven STATUS routing --------------------------------
+  bool             pendingTcStatusTm{false};        // set when TC requested STATUS
+  MessageQueueId_t pendingTcStatusReportedTo{MessageQueueIF::NO_QUEUE}; // who to echo data to
 
-  // Datasets
-  RwReplySet replySet{this};
-  RwHkSet    hkSet{this};
+  // ---------------- Local datasets ------------------------------------------
+  RwReplySet replySet{this};                        // last raw STATUS frame
+  RwHkSet    hkSet{this};                           // housekeeping snapshot
 
-  // Runtime parameters
-  int16_t  p_maxRpm{RwConfig::MAX_RPM_DEFAULT};
-  uint16_t p_maxSlewRpmS{RwConfig::MAX_SLEW_RPM_S_DEFAULT};
+  // ---------------- Runtime parameters --------------------------------------
+  int16_t  p_maxRpm{RwConfig::MAX_RPM_DEFAULT};     // limit for SET_SPEED
+  uint16_t p_maxSlewRpmS{RwConfig::MAX_SLEW_RPM_S_DEFAULT}; // optional slew limit
 
-  // Simple FDIR thresholds / debounce (from config)
+  // ---------------- Simple FDIR thresholds / debounce -----------------------
   static constexpr int16_t STUCK_RPM_THRESH       = RwConfig::STUCK_RPM_THRESH;
   static constexpr uint8_t STUCK_DEBOUNCE_FRAMES  = RwConfig::STUCK_DEBOUNCE_FRAMES;
   static constexpr int16_t TORQUE_HIGH_MNM_THRESH = RwConfig::TORQUE_HIGH_MNM_THRESH;
   static constexpr uint8_t TORQUE_DEBOUNCE_FRAMES = RwConfig::TORQUE_DEBOUNCE_FRAMES;
 
-  uint8_t stuckCnt{0};
-  uint8_t torqueHighCnt{0};
+  uint8_t  stuckCnt{0};                             // debounce counter for "stuck" detection
+  uint8_t  torqueHighCnt{0};                        // debounce counter for high torque
 
-  // Error counters (+ thresholds from Config)
-  uint32_t crcErrCnt{0};
-  uint32_t malformedCnt{0};
+  // ---------------- Error counters ------------------------------------------
+  uint32_t crcErrCnt{0};                            // CRC error counter
+  uint32_t malformedCnt{0};                         // malformed frame counter
   static constexpr uint32_t CRC_ERR_EVENT_THRESH   = RwConfig::CRC_ERR_EVENT_THRESH;
   static constexpr uint32_t MALFORMED_EVENT_THRESH = RwConfig::MALFORMED_EVENT_THRESH;
 
-  // RX ring buffer (collects stream; we search for latest valid STATUS)
-  static constexpr std::size_t RX_RING_SIZE = RwConfig::RX_RING_SIZE;
-  uint8_t rxStorage[RX_RING_SIZE] = {};
-  SharedRingBuffer rxRing{/*objectId*/ RwConfig::RX_RING_OBJ_ID, rxStorage, RX_RING_SIZE,
-                          /*overwriteOld*/ false,
-                          /*maxExcessBytes*/ RwProtocol::STATUS_LEN - 1};
+  // ---------------- RX ring buffer ------------------------------------------
+  static constexpr std::size_t RX_RING_SIZE = RwConfig::RX_RING_SIZE; // bytes in ring
+  uint8_t rxStorage[RX_RING_SIZE] = {};                // backing storage
+  SharedRingBuffer rxRing{                                 // stream buffer for searching frames
+      /*objectId*/ RwConfig::RX_RING_OBJ_ID,
+      rxStorage,
+      RX_RING_SIZE,
+      /*overwriteOld*/ false,
+      /*maxExcessBytes*/ RwProtocol::STATUS_LEN - 1};
 
-  // Parameter helper
-  ParameterHelper parameterHelper{this};
+  // ---------------- Parameter helper ----------------------------------------
+  ParameterHelper parameterHelper{this};           // FSFW parameter interface helper
 };
 
-// Debug switch
+// Debug on/off switch (set to 1 to enable verbose logging)
 #ifndef RW_VERBOSE
 #define RW_VERBOSE 0
 #endif

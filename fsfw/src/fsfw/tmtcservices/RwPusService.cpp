@@ -4,7 +4,7 @@
 #include <cstring>
 #include <iomanip>
 
-#include "fsfw/devicehandlers/RwProtocol.h"  // CRC-16, IDs, STATUS_LEN
+#include "fsfw/devicehandlers/RwProtocol.h" 
 #include "example_common/mission/acs/AcsController.h"
 #include "commonObjects.h"
 #include "fsfw/action/ActionMessage.h"
@@ -21,9 +21,12 @@
 
 namespace {
 
+// Read big-endian 32-bit unsigned
 inline uint32_t be32(const uint8_t* p) {
   return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
 }
+
+// Read big-endian float32
 inline float be_f32(const uint8_t* p) {
   const uint32_t u = be32(p);
   float f;
@@ -31,8 +34,8 @@ inline float be_f32(const uint8_t* p) {
   return f;
 }
 
-// Find a STATUS frame with CRC-16/CCITT (RwProtocol::STATUS_LEN bytes).
-// Layout: [AB, 10, spdH, spdL, torH, torL, running, crcH, crcL]
+// Scan buffer for a valid STATUS frame with CRC-16 (length = RwProtocol::STATUS_LEN)
+// Returns byte index or -1 if not found
 int findStatusFrameCrc16(const uint8_t* buf, size_t len) {
   if (len < RwProtocol::STATUS_LEN) return -1;
   for (size_t i = 0; i + (RwProtocol::STATUS_LEN - 1) < len; ++i) {
@@ -46,12 +49,15 @@ int findStatusFrameCrc16(const uint8_t* buf, size_t len) {
   return -1;
 }
 
+// Store big-endian 32-bit unsigned
 static inline void be_store_u32(uint8_t* p, uint32_t v) {
   p[0] = static_cast<uint8_t>((v >> 24) & 0xFF);
   p[1] = static_cast<uint8_t>((v >> 16) & 0xFF);
   p[2] = static_cast<uint8_t>((v >> 8) & 0xFF);
   p[3] = static_cast<uint8_t>( v       & 0xFF);
 }
+
+// Store big-endian float32
 static inline void be_store_f32(uint8_t* p, float f) {
   static_assert(sizeof(float) == 4, "float must be 4 bytes");
   uint32_t u;
@@ -60,6 +66,7 @@ static inline void be_store_f32(uint8_t* p, float f) {
 }
 
 #if RW_PUS_VERBOSE
+// Hex dump helper guarded by RW_PUS_VERBOSE
 static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
 #if FSFW_CPP_OSTREAM_ENABLED == 1
   sif::warning << tag << " (" << n << "): ";
@@ -75,6 +82,7 @@ static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
 static inline void dumpHexWarn(const char*, const uint8_t*, size_t) {}
 #endif
 
+// Human-readable name for command codes in replies (for logs)
 inline const char* cmdName(Command_t c) {
   if (c == ActionMessage::DATA_REPLY || c == DeviceHandlerMessage::REPLY_DIRECT_COMMAND_DATA) {
     return "DATA_REPLY/DH_DIRECT_DATA";
@@ -88,16 +96,19 @@ inline const char* cmdName(Command_t c) {
     default: return "UNKNOWN";
   }
 }
+
 }  // namespace
 
-// Minimal per-command state
+// Minimal per-command state for multi-step operations
 enum class CmdState : uint32_t { NONE = 0, WAIT_DATA = 1 };
 
+// Constructor: basic PUS-220 service with limits for parallel TCs and timeout
 RwPusService::RwPusService(object_id_t objectId, uint16_t apid, uint8_t serviceId,
                            uint8_t numParallelCommands, uint16_t commandTimeoutSeconds)
     : CommandingServiceBase(objectId, apid, "PUS 220 RW CMD", serviceId, numParallelCommands,
                             commandTimeoutSeconds) {}
 
+// Resolve storage managers and finish base init
 ReturnValue_t RwPusService::initialize() {
   auto res = CommandingServiceBase::initialize();
   if (res != returnvalue::OK) return res;
@@ -115,6 +126,7 @@ ReturnValue_t RwPusService::initialize() {
   return (ipcStore != nullptr) ? returnvalue::OK : returnvalue::FAILED;
 }
 
+// Filter supported subservices (TCs). Unknown subservices are rejected.
 ReturnValue_t RwPusService::isValidSubservice(uint8_t subservice) {
   switch (static_cast<Subservice>(subservice)) {
     case Subservice::SET_SPEED:
@@ -123,22 +135,24 @@ ReturnValue_t RwPusService::isValidSubservice(uint8_t subservice) {
     case Subservice::SET_TORQUE:
     case Subservice::SET_MODE:
     case Subservice::ACS_SET_ENABLE:
-    case Subservice::ACS_SET_TARGET:  // NEW
+    case Subservice::ACS_SET_TARGET:  // local only
       return returnvalue::OK;
     default:
       return AcceptsTelecommandsIF::INVALID_SUBSERVICE;
   }
 }
 
+// Resolve target queue and object for a TC. The first 4 bytes are always the target OID.
+// ACS local operations return NO_QUEUE to keep handling inside the service.
 ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t subservice, const uint8_t* tcData,
                                                      size_t tcLen, MessageQueueId_t* id,
                                                      object_id_t* objectId) {
   if (tcLen < 4) return CommandingServiceBase::INVALID_TC;
 
-  // First 4 bytes in AppData are always a target OID (RW handler or ACS controller)
+  // First 4 bytes in AppData are target object id (RW handler or ACS controller)
   *objectId = static_cast<object_id_t>(be32(tcData));
 
-  // Local-only operations (handled in prepareCommand without sending to a device queue)
+  // Local-only subservices (no device queue interaction)
   if (static_cast<Subservice>(subservice) == Subservice::ACS_SET_ENABLE ||
       static_cast<Subservice>(subservice) == Subservice::ACS_SET_TARGET) {
     *id = MessageQueueIF::NO_QUEUE;
@@ -146,7 +160,7 @@ ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t subservice, const u
     return returnvalue::OK;
   }
 
-  // Default: resolve as DeviceHandler (RW)
+  // Default path: forward to a DeviceHandler (a RW instance)
   auto* dh = ObjectManager::instance()->get<DeviceHandlerIF>(*objectId);
   if (dh == nullptr) {
 #if RW_PUS_VERBOSE
@@ -158,17 +172,18 @@ ReturnValue_t RwPusService::getMessageQueueAndObject(uint8_t subservice, const u
 
   *id = dh->getCommandQueue();
 
-  // Map sender queue -> object id for robust unrequested reply routing
+  // Map sender queue -> object id (used for unrequested replies)
   qidToObj_[*id] = *objectId;
 
 #if RW_PUS_VERBOSE
   sif::warning << "PUS220 route: commandQueueId=0x" << std::hex << *id << std::dec << std::endl;
 #endif
 
-  lastTargetObjectId_ = *objectId;  // fallback
+  lastTargetObjectId_ = *objectId;  // fallback if mapping is not found later
   return returnvalue::OK;
 }
 
+// Convert TC payload to internal command messages and optional state machine setup
 ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subservice,
                                            const uint8_t* tcData, size_t tcLen, uint32_t* state,
                                            object_id_t objectId) {
@@ -178,6 +193,7 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
   if (ipcStore == nullptr) return returnvalue::FAILED;
   if (tcLen < 4) return CommandingServiceBase::INVALID_TC;
 
+  // AppData after the 4-byte OID
   const uint8_t* app = tcData + 4;
   const size_t appLen = tcLen - 4;
 
@@ -185,6 +201,7 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
 
   switch (static_cast<Subservice>(subservice)) {
     case Subservice::SET_SPEED: {
+      // Payload: int16 rpm
       if (appLen < 2) return CommandingServiceBase::INVALID_TC;
       const int16_t rpm = static_cast<int16_t>((app[0] << 8) | app[1]);
       store_address_t sid{};
@@ -197,6 +214,7 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
     }
 
     case Subservice::SET_TORQUE: {
+      // Payload: int16 torque_mNm
       if (appLen < 2) return CommandingServiceBase::INVALID_TC;
       const int16_t tq = static_cast<int16_t>((app[0] << 8) | app[1]);
       store_address_t sid{};
@@ -209,6 +227,7 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
     }
 
     case Subservice::STOP: {
+      // No payload needed
       store_address_t sid{};
       uint8_t* p = nullptr;
       auto rv = ipcStore->getFreeElement(&sid, 1, &p);
@@ -219,7 +238,7 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
     }
 
     case Subservice::STATUS: {
-      // Expect a DATA_REPLY later -> WAIT_DATA
+      // Expect data reply later, set state to WAIT_DATA
       if (state) *state = static_cast<uint32_t>(CmdState::WAIT_DATA);
       store_address_t sid{};
       uint8_t* p = nullptr;
@@ -231,6 +250,7 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
     }
 
     case Subservice::SET_MODE: {
+      // Payload: mode(1) | submode(1)
       if (appLen < 2) return CommandingServiceBase::INVALID_TC;
       const uint8_t mode = app[0];
       const uint8_t submode = app[1];
@@ -238,7 +258,8 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       return returnvalue::OK;
     }
 
-    case Subservice::ACS_SET_ENABLE: {  // local handling (no message sent)
+    case Subservice::ACS_SET_ENABLE: {
+      // Local handling: enable or disable ACS controller
       if (appLen < 1) return CommandingServiceBase::INVALID_TC;
       const bool enable = app[0] != 0;
       auto* acs = ObjectManager::instance()->get<AcsController>(objectId);
@@ -250,20 +271,20 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
         return CommandingServiceBase::INVALID_OBJECT;
       }
       acs->enable(enable);
-      // Immediately emit typed ACS HK for operator feedback
+      // Emit typed HK right away so operator sees the change
       (void)emitAcsTypedHk(objectId);
-      // No queue message -> treat as complete
       return CommandingServiceBase::EXECUTION_COMPLETE;
     }
 
-    case Subservice::ACS_SET_TARGET: {  // NEW: local handling, set target attitude (q_ref)
+    case Subservice::ACS_SET_TARGET: {
+      // Local handling: set new target attitude quaternion (big-endian f32 * 4)
       if (appLen < 16) return CommandingServiceBase::INVALID_TC;
       float q0 = be_f32(app + 0);
       float q1 = be_f32(app + 4);
       float q2 = be_f32(app + 8);
       float q3 = be_f32(app + 12);
 
-      // Normalize defensively
+      // Normalize defensively (fallback to identity on tiny norm)
       float n = std::sqrt(q0*q0 + q1*q1 + q2*q2 + q3*q3);
       if (n > 1e-6f) { q0/=n; q1/=n; q2/=n; q3/=n; } else { q0=1.f; q1=q2=q3=0.f; }
 
@@ -273,7 +294,7 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       }
       acs->setTargetAttitude(std::array<float,4>{q0,q1,q2,q3});
 
-      // Optional: emit typed HK to see new command reflected quickly
+      // Emit typed HK to see the new reference early
       (void)emitAcsTypedHk(objectId);
 
       return CommandingServiceBase::EXECUTION_COMPLETE;
@@ -284,6 +305,7 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
   }
 }
 
+// Read a stored reply payload, try to parse a STATUS frame and emit typed TM
 ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object_id_t objectId) {
   if (sid.raw == StorageManagerIF::INVALID_ADDRESS) {
 #if RW_PUS_VERBOSE
@@ -291,6 +313,7 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
 #endif
   }
 
+  // Try IPC, then TM, then TC store in this order
   StorageManagerIF* stores[3] = {ipcStore, tmStore, tcStore};
   const uint8_t* buf = nullptr;
   size_t len = 0;
@@ -319,9 +342,9 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
     sif::warning << "[PUS220 generic] sid=0x" << std::hex << sid.raw << std::dec
                  << " has no usable payload -> keep waiting" << std::endl;
 #endif
-    return returnvalue::FAILED;
   }
 
+  // Try to locate and validate a STATUS frame
   dumpHexWarn("[PUS220 generic] head", buf, (len < 32 ? len : size_t(32)));
   const int idx = findStatusFrameCrc16(buf, len);
 
@@ -332,7 +355,8 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
     if (!ok) {
       rv = returnvalue::FAILED;
     } else {
-      // AppData: [object_id(4) | speed(2) | torque(2) | running(1)] => 9 bytes
+      // Build typed TM app data:
+      // [object_id(4) | speed(2) | torque(2) | running(1)]
       uint8_t app[9];
       app[0] = static_cast<uint8_t>((objectId >> 24) & 0xFF);
       app[1] = static_cast<uint8_t>((objectId >> 16) & 0xFF);
@@ -352,6 +376,7 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
     rv = returnvalue::FAILED;
   }
 
+  // Clean up storage
   if (usedStore != nullptr) {
     (void)usedStore->deleteData(sid);
   }
@@ -359,6 +384,7 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
   return rv;
 }
 
+// Handle replies from handlers, progress multi-step states, and complete TCs when ready
 ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, uint32_t* state,
                                         CommandMessage*, object_id_t objectId, bool* isStep) {
 #if RW_PUS_VERBOSE
@@ -370,7 +396,7 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
   CmdState st = CmdState::NONE;
   if (state != nullptr) st = static_cast<CmdState>(*state);
 
-  // Data-like replies: resolve store id and parse
+  // Data-like replies carry a store id; parse and emit TM if possible
   const bool isDataLike = (cmd == ActionMessage::DATA_REPLY) ||
                           (cmd == DeviceHandlerMessage::REPLY_DIRECT_COMMAND_DATA) ||
                           (cmd == DeviceHandlerMessage::REPLY_RAW_REPLY);
@@ -382,8 +408,9 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
         (sidAction.raw != StorageManagerIF::INVALID_ADDRESS) ? sidAction : sidDh;
 
     if (sid.raw == StorageManagerIF::INVALID_ADDRESS) {
+      // No payload yet; if we are waiting for data, step the state machine
       if (st == CmdState::WAIT_DATA) {
-        if (isStep) *isStep = true;  // progress without completion
+        if (isStep) *isStep = true;
         return returnvalue::OK;
       }
       return returnvalue::OK;
@@ -401,7 +428,7 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
     return returnvalue::OK;
   }
 
-  // Control-only replies
+  // Non-data replies: progress or complete depending on state
   switch (cmd) {
     case ActionMessage::STEP_SUCCESS: {
       if (st != CmdState::WAIT_DATA) {
@@ -431,6 +458,7 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
   }
 }
 
+// Unrequested replies (e.g. spontaneous STATUS) are treated like data and emitted as TM
 void RwPusService::handleUnrequestedReply(CommandMessage* reply) {
 #if RW_PUS_VERBOSE
   const auto cmd = reply->getCommand();
@@ -446,7 +474,7 @@ void RwPusService::handleUnrequestedReply(CommandMessage* reply) {
     const store_address_t sid =
         (sidAction.raw != StorageManagerIF::INVALID_ADDRESS) ? sidAction : sidDh;
 
-    // Map sender queue -> object id (robust when multiple RWs exist)
+    // Map sender queue -> object id to identify which RW sent the frame
     object_id_t obj = lastTargetObjectId_;
     const MessageQueueId_t sender = reply->getSender();
     auto it = qidToObj_.find(sender);
@@ -463,6 +491,7 @@ void RwPusService::handleUnrequestedReply(CommandMessage* reply) {
   }
 }
 
+// Compose and emit typed ACS HK (PUS 220) using big-endian fields
 ReturnValue_t RwPusService::emitAcsTypedHk(object_id_t acsObjectId) {
   auto* acs = ObjectManager::instance()->get<AcsController>(acsObjectId);
   if (acs == nullptr) {

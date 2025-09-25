@@ -122,3 +122,8 @@ struct Config {
 inline constexpr Config DEFAULT{};
 
 } // namespace acs
+
+// Debug on/off switch (set to 1 to enable verbose logging)
+#ifndef ACS_VERBOSE
+#define ACS_VERBOSE 0
+#endif

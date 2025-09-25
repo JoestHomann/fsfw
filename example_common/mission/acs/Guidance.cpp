@@ -13,7 +13,7 @@ void Guidance::setTargetQuat(const std::array<float,4>& q_ref) {
 // Advance guidance by one control step
 // Hold-attitude mode: no operation
 void Guidance::update(float /*dt*/) {
-  // no-op for fixed target
+  // Nothing to do for fixed target attitude
 }
 
 // Provide rate command in BODY frame [rad/s]
