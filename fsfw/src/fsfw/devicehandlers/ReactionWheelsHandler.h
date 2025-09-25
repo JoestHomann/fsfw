@@ -26,11 +26,11 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
     CMD_SET_SPEED = 0x01,
     CMD_STOP = 0x02,
     CMD_STATUS = 0x03,
-    CMD_STATUS_POLL = 0x1003,  // internal "poll now" command
+    CMD_STATUS_POLL = 0x1003,  // internal "poll now" command (periodic/auto)
     CMD_SET_TORQUE = 0x04      // torque in mNm
   };
 
-  // Unified internal reply ID for polled STATUS
+  // Unified internal reply ID for STATUS replies
   enum ReplyId : DeviceCommandId_t { REPLY_STATUS_POLL = 0x2002 };
 
   // ---------------- Parameter service ---------------------------------------
@@ -67,13 +67,13 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
 
   // HK dataset snapshot
   struct RwHkSet : public LocalDataSet {
-    LocalPoolVariable<int16_t> speedRpm;       // RW wheel speed
-    LocalPoolVariable<int16_t> torque_mNm;     // RW torque
-    LocalPoolVariable<uint8_t> running;        // 1 if wheel reports running
-    LocalPoolVariable<uint16_t> flags;         // per-frame flags
-    LocalPoolVariable<uint32_t> crcErrCnt;     // CRC errors seen
-    LocalPoolVariable<uint32_t> malformedCnt;  // malformed frames seen
-    LocalPoolVariable<uint32_t> timestampMs;   // reception timestamp
+    LocalPoolVariable<int16_t> speedRpm;
+    LocalPoolVariable<int16_t> torque_mNm;
+    LocalPoolVariable<uint8_t> running;
+    LocalPoolVariable<uint16_t> flags;
+    LocalPoolVariable<uint32_t> crcErrCnt;
+    LocalPoolVariable<uint32_t> malformedCnt;
+    LocalPoolVariable<uint32_t> timestampMs;
 
     static constexpr uint16_t HK_VAR_COUNT = 7;
 
@@ -100,97 +100,112 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   void modeChanged() override;  // log mode change and force initial poll in NORMAL
 
   // ---------------- DeviceHandlerBase hooks ---------------------------------
-  ReturnValue_t buildNormalDeviceCommand(DeviceCommandId_t* id) override;      // periodic/TC polls
+  ReturnValue_t buildNormalDeviceCommand(DeviceCommandId_t* id) override;      // periodic polls
   ReturnValue_t buildTransitionDeviceCommand(DeviceCommandId_t* id) override;  // none
   ReturnValue_t buildCommandFromCommand(DeviceCommandId_t deviceCommand, const uint8_t* data,
-                                        size_t len) override;  // build wire cmd
+                                        size_t len) override;  // build wire cmd (incl. STATUS TC)
   ReturnValue_t scanForReply(const uint8_t* start, size_t len, DeviceCommandId_t* foundId,
-                             size_t* foundLen) override;  // parse/ring
-  ReturnValue_t interpretDeviceReply(DeviceCommandId_t id,
-                                     const uint8_t* packet) override;  // update HK/FDIR
-  uint32_t getTransitionDelayMs(Mode_t from, Mode_t to) override;      // delays from config
+                             size_t* foundLen) override;
+  ReturnValue_t interpretDeviceReply(DeviceCommandId_t id, const uint8_t* packet) override;
+  uint32_t getTransitionDelayMs(Mode_t from, Mode_t to) override;
 
   ReturnValue_t initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
-                                        LocalDataPoolManager& poolManager) override;  // pool layout
-  void fillCommandAndReplyMap() override;                                             // DH maps
+                                        LocalDataPoolManager& poolManager) override;
+  void fillCommandAndReplyMap() override;
 
-  // Subscribe periodic HK after task creation
   ReturnValue_t initializeAfterTaskCreation() override;
 
-  // Map SID -> dataset for HK service
   LocalPoolDataSetBase* getDataSetHandle(sid_t sid) override;
 
-  // Forward "STATUS now" TC to next cycle (Action interface)
+  // Keep track of STATUS callers to mirror data back via ActionHelper
   ReturnValue_t executeAction(ActionId_t actionId, MessageQueueId_t commandedBy,
                               const uint8_t* data, size_t size) override;
 
-  // Runtime parameters (parameter service)
   ReturnValue_t getParameter(uint8_t domainId, uint8_t parameterId,
                              ParameterWrapper* parameterWrapper, const ParameterWrapper* newValues,
                              uint16_t startAtIndex) override;
 
  private:
-  // ---------------- RX helpers ----------------------------------------------
-  ReturnValue_t drainRxNow();       // drop a few stale frames from COM IF
-  ReturnValue_t drainRxIntoRing();  // pull available bytes into ring
-  void reportProtocolIssuesInWindow(const uint8_t* buf, size_t n);  // count CRC/malformed
+  // ---------------- Mode machine states -------------------------------------
 
-  // ---------------- Error handling ---------------------------------------
-  void handleCrcError();   // Handle CRC error: Count and trigger event
-  void handleMalformed();  // Handle malformed: Count and trigger event
+  // Shutdown
+  bool shuttingDown_{false};
+  bool stopSent_{false};
+  uint32_t shutdownT0_{0};
+  uint32_t lastStopTxMs_{0};
+  uint8_t stopRetriesDone_{0};
+  static constexpr uint8_t STOP_RETRIES = 0;
+  static constexpr uint32_t STOP_RETRY_MS = 60; 
+
+  // Startup
+  bool startingUp_{false};
+  bool startupSent_{false};
+  uint8_t startupRetriesDone_{0};
+  uint32_t startupT0_{0};
+  uint32_t startupLastTxMs_{0};
+  static constexpr uint8_t  START_RETRIES  = 0;   
+  static constexpr uint32_t START_RETRY_MS = 60; 
+  // ---------------- RX helpers ----------------------------------------------
+  ReturnValue_t drainRxNow();
+  ReturnValue_t drainRxIntoRing();
+  void reportProtocolIssuesInWindow(const uint8_t* buf, size_t n);
+
+  // ---------------- Error handling ------------------------------------------
+  void handleCrcError();
+  void handleMalformed();
 
   // ---------------- Error counters ------------------------------------------
-  uint32_t crcErrCnt{0};     // CRC error counter
-  uint32_t malformedCnt{0};  // malformed frame counter
+  uint32_t crcErrCnt{0};
+  uint32_t malformedCnt{0};
   static constexpr uint32_t CRC_ERR_EVENT_THRESH = RwConfig::CRC_ERR_EVENT_THRESH;
   static constexpr uint32_t MALFORMED_EVENT_THRESH = RwConfig::MALFORMED_EVENT_THRESH;
 
   // ---------------- TX buffer ------------------------------------------------
-  uint8_t txBuf[RwProtocol::CMD_LEN] = {};  // last command frame to send
+  uint8_t txBuf[RwProtocol::CMD_LEN] = {};
 
   // ---------------- Polling / timeout supervision ---------------------------
-  uint32_t statusPollCnt{0};                                          // poll divider counter
-  uint32_t statusPollDivider{RwConfig::STATUS_POLL_DIVIDER_DEFAULT};  // polls every N cycles
-  static constexpr uint8_t STATUS_TIMEOUT_CYCLES = RwConfig::STATUS_TIMEOUT_CYCLES;  // wait cycles
-  int8_t statusAwaitCnt{-1};  // >=0 means waiting for STATUS reply
+  uint32_t statusPollCnt{0};
+  uint32_t statusPollDivider{RwConfig::STATUS_POLL_DIVIDER_DEFAULT};
+  static constexpr uint8_t STATUS_TIMEOUT_CYCLES = RwConfig::STATUS_TIMEOUT_CYCLES;
+  int8_t statusAwaitCnt{-1};
 
-  // ---------------- Poll block after external command ---------------------
-  uint32_t lastExtCmdMs{0};                        // timestamp of last TC sent
-  static constexpr uint32_t POLL_BLOCK_MS = 50;    // block polls for 50 ms after TC
+  // ---------------- Poll block after external command -----------------------
+  uint32_t lastExtCmdMs{0};
+  static constexpr uint32_t POLL_BLOCK_MS = 50;
 
   // ---------------- TC-driven STATUS routing --------------------------------
-  bool pendingTcStatusTm{false};  // set when TC requested STATUS
-  MessageQueueId_t pendingTcStatusReportedTo{MessageQueueIF::NO_QUEUE};  // who to echo data to
+  bool pendingTcStatusTm{false};  // only for echoing data back
+  MessageQueueId_t pendingTcStatusReportedTo{MessageQueueIF::NO_QUEUE};
 
   // ---------------- Local datasets ------------------------------------------
-  RwReplySet replySet{this};  // last raw STATUS frame
-  RwHkSet hkSet{this};        // housekeeping snapshot
+  RwReplySet replySet{this};
+  RwHkSet hkSet{this};
 
   // ---------------- Runtime parameters --------------------------------------
-  int16_t p_maxRpm{RwConfig::MAX_RPM_DEFAULT};  // limit for SET_SPEED
+  int16_t p_maxRpm{RwConfig::MAX_RPM_DEFAULT};
 
   // ---------------- FDIR thresholds / counts --------------------------------
-  static constexpr int16_t STUCK_RPM_THRESH = RwConfig::STUCK_RPM_THRESH;   // speed threshold
-  static constexpr uint8_t STUCK_RPM_COUNT  = RwConfig::STUCK_RPM_COUNT;    // debounce count
-  static constexpr int16_t HIGH_TORQUE_THRESH = RwConfig::HIGH_TORQUE_THRESH;  // torque threshold
-  static constexpr uint8_t HIGH_TORQUE_COUNT  = RwConfig::HIGH_TORQUE_COUNT;   // debounce count
+  static constexpr int16_t STUCK_RPM_THRESH = RwConfig::STUCK_RPM_THRESH;
+  static constexpr uint8_t STUCK_RPM_COUNT  = RwConfig::STUCK_RPM_COUNT;
+  static constexpr int16_t HIGH_TORQUE_THRESH = RwConfig::HIGH_TORQUE_THRESH;
+  static constexpr uint8_t HIGH_TORQUE_COUNT  = RwConfig::HIGH_TORQUE_COUNT;
 
-  uint8_t stuckRpmCnt{0};    // Counter for stuck detection
-  uint8_t highTorqueCnt{0};  // Counter for high torque
+  uint8_t stuckRpmCnt{0};
+  uint8_t highTorqueCnt{0};
 
   // ---------------- RX ring buffer ------------------------------------------
-  static constexpr std::size_t RX_RING_SIZE = RwConfig::RX_RING_SIZE;  // bytes in ring
-  uint8_t rxStorage[RX_RING_SIZE] = {};                                // backing storage
-  SharedRingBuffer rxRing{// stream buffer for searching frames
-                          /*objectId*/ RwConfig::RX_RING_OBJ_ID, rxStorage, RX_RING_SIZE,
-                          /*overwriteOld*/ false,
-                          /*maxExcessBytes*/ RwProtocol::STATUS_LEN - 1};
+  static constexpr std::size_t RX_RING_SIZE = RwConfig::RX_RING_SIZE;
+  uint8_t rxStorage[RX_RING_SIZE] = {};
+  SharedRingBuffer rxRing{
+      /*objectId*/ RwConfig::RX_RING_OBJ_ID, rxStorage, RX_RING_SIZE,
+      /*overwriteOld*/ false,
+      /*maxExcessBytes*/ RwProtocol::STATUS_LEN - 1};
 
   // ---------------- Parameter helper ----------------------------------------
-  ParameterHelper parameterHelper{this};  // FSFW parameter interface helper
+  ParameterHelper parameterHelper{this};
 };
 
 // Debug on/off switch (set to 1 to enable verbose logging)
 #ifndef RW_VERBOSE
-#define RW_VERBOSE 0
+#define RW_VERBOSE 1
 #endif

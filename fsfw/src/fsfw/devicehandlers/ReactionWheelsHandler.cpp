@@ -16,8 +16,7 @@
 #include "fsfw/timemanager/Clock.h"
 #include "fsfw/datapoollocal/ProvidesDataPoolSubscriptionIF.h"
 
-// -------- Local constants (keep small, device-friendly) ----------------------
-// Wait time after STOP before power-off (ms)
+// -------- Local constants ----------------------------------------------------
 static constexpr uint32_t COAST_WAIT_MS = 80;
 
 // -------- Construction -------------------------------------------------------
@@ -28,94 +27,38 @@ ReactionWheelsHandler::ReactionWheelsHandler(object_id_t objectId, object_id_t c
   (void)rxRing.initialize();
 }
 
-// -------- Mode Handling: STARTUP (OFF -> ON) --------------------------------
-// Startup handshake: drain RX, send one STATUS, wait short window for reply.
-// If no reply arrives within OFF->ON delay, continue to ON but log via counters.
+// -------- Mode Handling: STARTUP --------------------------------
 void ReactionWheelsHandler::doStartUp() {
-  // Static FSM local to avoid header changes
-  enum class S { IDLE, SEND_STATUS, WAIT_STATUS } ;
-  static S s = S::IDLE;
-  static uint32_t t0 = 0;
-  static bool sentOnce = false;
-
-  switch (s) {
-    case S::IDLE: {
-      (void)drainRxNow();  // drop stale bytes after power-up
-      s = S::SEND_STATUS;
-      [[fallthrough]];
-    }
-    case S::SEND_STATUS: {
-      const size_t total = RwProtocol::buildStatusReq(txBuf, sizeof(txBuf));
-      if (total != 0) {
-        rawPacket = txBuf;
-        rawPacketLen = total;
-        statusAwaitCnt = 0;  // open reply window
-        Clock::getUptime(&t0);
-        sentOnce = true;
-        s = S::WAIT_STATUS;
-        return;  // stay in transition
-      }
-      // If we cannot build a frame, do not block startup
-      s = S::WAIT_STATUS;
-      Clock::getUptime(&t0);
-      return;
-    }
-    case S::WAIT_STATUS: {
-      // Consider startup successful if reply was seen (statusAwaitCnt reset by interpret)
-      if (statusAwaitCnt < 0) {
-        s = S::IDLE;
-        sentOnce = false;
-        setMode(MODE_ON);
-        return;
-      }
-      // Allow graceful timeout using framework delay OFF->ON
-      uint32_t now = 0;
-      Clock::getUptime(&now);
-      const uint32_t waitMs = RwConfig::DELAY_OFF_TO_ON_MS;
-      if (sentOnce && (now - t0) >= waitMs) {
-        // No reply, continue to ON but keep counters; FDIR will catch if device stays silent
-        s = S::IDLE;
-        sentOnce = false;
-        setMode(MODE_ON);
-        return;
-      }
-      return;  // keep waiting
-    }
+  sif::info << "ReactionWheelsHandler: doStartUp()" << std::endl;
+  if (!startingUp_) {
+    startingUp_ = true;
+    startupSent_ = false;
+    startupRetriesDone_ = 0;
+    Clock::getUptime(&startupT0_);
+    startupLastTxMs_ = startupT0_;
+    statusAwaitCnt = -1;   
+    (void)drainRxNow(); 
   }
+  
 }
 
-// -------- Mode Handling: SHUTDOWN (ANY -> OFF) -------------------------------
-// Coast-down before power-off: send STOP once, wait a short time, then OFF.
+
+// -------- Mode Handling: SHUTDOWN -------------------------------
 void ReactionWheelsHandler::doShutDown() {
-  enum class S { SEND_COAST, WAIT_COAST } ;
-  static S s = S::SEND_COAST;
-  static uint32_t t0 = 0;
-  switch (s) {
-    case S::SEND_COAST: {
-      const size_t total = RwProtocol::buildStop(txBuf, sizeof(txBuf));
-      if (total != 0) {
-        rawPacket = txBuf;
-        rawPacketLen = total;
-      }
-      Clock::getUptime(&t0);
-      s = S::WAIT_COAST;
-      return;  // stay in transition
-    }
-    case S::WAIT_COAST: {
-      uint32_t now = 0;
-      Clock::getUptime(&now);
-      if ((now - t0) >= COAST_WAIT_MS) {
-        s = S::SEND_COAST;  // reset
-        setMode(MODE_OFF);
-        return;
-      }
-      return;  // keep waiting
-    }
+  sif::info << "ReactionWheelsHandler: doShutDown()" << std::endl;
+  if (!shuttingDown_) {
+    shuttingDown_ = true;
+    stopSent_ = false;
+    stopRetriesDone_ = 0;
+    Clock::getUptime(&shutdownT0_);
+    lastStopTxMs_ = shutdownT0_;
   }
+  
 }
+
+
 
 // -------- Mode change hook ---------------------------------------------------
-// Force immediate STATUS after entering NORMAL to sync state quickly.
 void ReactionWheelsHandler::modeChanged() {
   Mode_t m{}; Submode_t s{};
   this->getMode(&m, &s);
@@ -123,8 +66,9 @@ void ReactionWheelsHandler::modeChanged() {
             << " (sub=" << static_cast<int>(s) << ")" << std::endl;
 
   if (m == MODE_NORMAL) {
-    (void)drainRxNow();                 // clear any stale bytes
-    statusPollCnt = statusPollDivider;  // force next buildNormal() to poll immediately
+    sif::info << "ReactionWheelsHandler: NORMAL mode" << std::endl;
+    (void)drainRxNow();
+    statusPollCnt = statusPollDivider;  // force first poll in NORMAL
   }
 }
 
@@ -198,34 +142,19 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
   if (statusAwaitCnt >= 0) {
     if (++statusAwaitCnt > STATUS_TIMEOUT_CYCLES) {
       triggerEvent(RwEvents::TIMEOUT, 0, 0);
-      statusAwaitCnt = -1;  // close poll window on timeout
+      statusAwaitCnt = -1;
     } else {
       *id = DeviceHandlerIF::NO_COMMAND_ID;
       return NOTHING_TO_SEND;
     }
   }
 
-  // Block polls briefly after TC-driven actuator commands
+  // Block polls briefly after external cmds
   uint32_t nowMs = 0;
   Clock::getUptime(&nowMs);
   if (lastExtCmdMs != 0 && (nowMs - lastExtCmdMs) < POLL_BLOCK_MS) {
     *id = DeviceHandlerIF::NO_COMMAND_ID;
     return NOTHING_TO_SEND;
-  }
-
-  // TC-triggered immediate poll
-  if (pendingTcStatusTm) {
-    (void)drainRxNow();
-    const size_t total = RwProtocol::buildStatusReq(txBuf, sizeof(txBuf));
-    if (total == 0) {
-      *id = DeviceHandlerIF::NO_COMMAND_ID;
-      return NOTHING_TO_SEND;
-    }
-    rawPacket    = txBuf;
-    rawPacketLen = total;
-    *id          = CMD_STATUS_POLL;
-    statusAwaitCnt = 0;
-    return returnvalue::OK;
   }
 
   // Periodic STATUS poll
@@ -247,13 +176,77 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
   return NOTHING_TO_SEND;
 }
 
-// -------- Transition commands (ON <-> NORMAL) --------------------------------
-// No device-specific mode commands in this ICD; we keep transitions silent.
-// STOP before OFF is handled in doShutDown().
+// -------- Transition commands ------------------------------------------------
 ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandId_t* id) {
+  uint32_t now = 0;
+  Clock::getUptime(&now);
+
+  // ---- OFF -> ON: Startup-Handshake hier abarbeiten ----
+  if (startingUp_) {
+    const bool retryWindow = (now - startupLastTxMs_) >= START_RETRY_MS;
+
+    // STATUS senden (einmalig + optionale Re-Trys)
+    if (!startupSent_ || (retryWindow && startupRetriesDone_ < START_RETRIES)) {
+      const size_t total = RwProtocol::buildStatusReq(txBuf, sizeof(txBuf));
+      if (total != 0) {
+        rawPacket    = txBuf;
+        rawPacketLen = total;
+        *id          = CMD_STATUS_POLL;   // erwartete STATUS-Antwort
+        statusAwaitCnt = 0;
+        startupSent_ = true;
+        ++startupRetriesDone_;
+        startupLastTxMs_ = now;
+#if RW_VERBOSE
+        sif::info << "RW: STARTUP STATUS sent (" << int(startupRetriesDone_)
+                  << "/" << int(START_RETRIES) << ")"<< std::endl;
+#endif
+        return returnvalue::OK;           // wird jetzt gesendet
+      }
+    }
+
+    // Abschlussbedingung: Antwort gesehen (interpret setzt statusAwaitCnt < 0)
+    // oder OFF->ON-Delay abgelaufen -> weiter in MODE_ON
+    if (statusAwaitCnt < 0 || (now - startupT0_) >= RwConfig::DELAY_OFF_TO_ON_MS) {
+      startingUp_ = false;
+      setMode(MODE_ON);
+    }
+
+    *id = DeviceHandlerIF::NO_COMMAND_ID;
+    return NOTHING_TO_SEND;
+  }
+
+  // ---- ON -> OFF: Dein bestehender STOP-Flow ----
+  if (shuttingDown_) {
+    const bool needRetryWindow = (now - lastStopTxMs_) >= STOP_RETRY_MS;
+    if (!stopSent_ || (needRetryWindow && stopRetriesDone_ < STOP_RETRIES)) {
+      const size_t total = RwProtocol::buildStop(txBuf, sizeof(txBuf));
+      if (total != 0) {
+        rawPacket    = txBuf;
+        rawPacketLen = total;
+        *id          = CMD_STOP;
+        stopSent_ = true;
+        ++stopRetriesDone_;
+        lastStopTxMs_ = now;
+#if RW_VERBOSE
+        sif::info << "RW: STOP sent (" << int(stopRetriesDone_)
+                  << "/" << int(STOP_RETRIES) << ")"<< std::endl;
+#endif
+        return returnvalue::OK;
+      }
+    }
+    if ((now - shutdownT0_) >= COAST_WAIT_MS) {
+      shuttingDown_ = false;
+      setMode(MODE_OFF);
+    }
+    *id = DeviceHandlerIF::NO_COMMAND_ID;
+    return NOTHING_TO_SEND;
+  }
+
+  // Kein Transition-I/O nötig
   *id = DeviceHandlerIF::NO_COMMAND_ID;
   return NOTHING_TO_SEND;
 }
+
 
 // -------- TC -> wire command builder -----------------------------------------
 ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t deviceCommand,
@@ -266,20 +259,15 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       int16_t rpm = 0;
       std::memcpy(&rpm, data, sizeof(rpm));
 
-      int16_t lim = p_maxRpm;
-      if (lim <= 0) {
-        lim = RwConfig::MAX_RPM_DEFAULT;
-      }
+      int16_t lim = p_maxRpm > 0 ? p_maxRpm : RwConfig::MAX_RPM_DEFAULT;
       if (rpm >  lim) rpm =  lim;
       if (rpm < -lim) rpm = -lim;
 
       const size_t total = RwProtocol::buildSetSpeed(txBuf, sizeof(txBuf), rpm);
-      if (total == 0) {
-        return returnvalue::FAILED;
-      }
+      if (total == 0) return returnvalue::FAILED;
       rawPacket = txBuf;
       rawPacketLen = total;
-      Clock::getUptime(&lastExtCmdMs);   // short poll block
+      Clock::getUptime(&lastExtCmdMs);
       return returnvalue::OK;
     }
 
@@ -297,33 +285,30 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       }
 
       const size_t total = RwProtocol::buildSetTorque(txBuf, sizeof(txBuf), tq);
-      if (total == 0) {
-        return returnvalue::FAILED;
-      }
+      if (total == 0) return returnvalue::FAILED;
       rawPacket = txBuf;
       rawPacketLen = total;
-      Clock::getUptime(&lastExtCmdMs);   // short poll block
+      Clock::getUptime(&lastExtCmdMs);
       return returnvalue::OK;
     }
 
     case CMD_STOP: {
       const size_t total = RwProtocol::buildStop(txBuf, sizeof(txBuf));
-      if (total == 0) {
-        return returnvalue::FAILED;
-      }
+      if (total == 0) return returnvalue::FAILED;
       rawPacket = txBuf;
       rawPacketLen = total;
-      Clock::getUptime(&lastExtCmdMs);   // short poll block
+      Clock::getUptime(&lastExtCmdMs);
       return returnvalue::OK;
     }
 
     case CMD_STATUS: {
+      // Allow TC-driven STATUS in MODE_ON/MODE_NORMAL alike
+      (void)drainRxNow();  // clear stale bytes before asking
       const size_t total = RwProtocol::buildStatusReq(txBuf, sizeof(txBuf));
-      if (total == 0) {
-        return returnvalue::FAILED;
-      }
-      rawPacket = txBuf;
+      if (total == 0) return returnvalue::FAILED;
+      rawPacket    = txBuf;
       rawPacketLen = total;
+      statusAwaitCnt = 0;
       return returnvalue::OK;
     }
 
@@ -338,11 +323,15 @@ void ReactionWheelsHandler::fillCommandAndReplyMap() {
   insertInCommandMap(CMD_SET_TORQUE,  false, 0);
   insertInCommandMap(CMD_STOP,        false, 0);
 
+  // Periodic/onboard poll with expected reply
   insertInCommandAndReplyMap(CMD_STATUS_POLL, 5, &replySet, RwProtocol::STATUS_LEN,
                              /*periodic*/ false, /*hasDifferentReplyId*/ true, REPLY_STATUS_POLL,
                              /*countdown*/ nullptr);
 
-  insertInCommandMap(CMD_STATUS, false, 0);
+  // IMPORTANT: Treat TC-driven STATUS like a command with expected reply as well.
+  insertInCommandAndReplyMap(CMD_STATUS, 5, &replySet, RwProtocol::STATUS_LEN,
+                             /*periodic*/ false, /*hasDifferentReplyId*/ true, REPLY_STATUS_POLL,
+                             /*countdown*/ nullptr);
 }
 
 // -------- FDIR counters ------------------------------------------------------
@@ -460,7 +449,6 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
 
   const uint8_t* pkt = replySet.raw.isValid() ? replySet.raw.value : packet;
 
-  // Decode according to ICD
   const int16_t speed   = static_cast<int16_t>((pkt[2] << 8) | pkt[3]);
   const int16_t torque  = static_cast<int16_t>((pkt[4] << 8) | pkt[5]);
   const uint8_t running = pkt[6];
@@ -538,10 +526,12 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   return returnvalue::OK;
 }
 
-// -------- Transition delays (framework hint) ---------------------------------
+// -------- Transition delays --------------------------------------------------
 uint32_t ReactionWheelsHandler::getTransitionDelayMs(Mode_t from, Mode_t to) {
   if (from == MODE_OFF && to == MODE_ON) return RwConfig::DELAY_OFF_TO_ON_MS;
   if (from == MODE_ON && to == MODE_NORMAL) return RwConfig::DELAY_ON_TO_NORMAL_MS;
+  if (to == MODE_OFF && from != MODE_OFF) return STOP_RETRIES * STOP_RETRY_MS + COAST_WAIT_MS + 200;
+  if (to != from) return 1000;  // Fallback
   return 0;
 }
 
@@ -560,14 +550,16 @@ ReturnValue_t ReactionWheelsHandler::initializeLocalDataPool(localpool::DataPool
   return returnvalue::OK;
 }
 
-// -------- Action entry (remember TC-driven STATUS) ---------------------------
+// -------- Action entry -------------------------------------------------------
 ReturnValue_t ReactionWheelsHandler::executeAction(ActionId_t actionId,
                                                    MessageQueueId_t commandedBy,
                                                    const uint8_t* data, size_t size) {
   const auto cmd = static_cast<DeviceCommandId_t>(actionId);
   if (cmd == CMD_STATUS) {
+    // Remember who asked, so we can mirror the data back in interpretDeviceReply()
     pendingTcStatusTm = true;
     pendingTcStatusReportedTo = commandedBy;
+    // Senden übernimmt jetzt buildCommandFromCommand() (funktioniert in MODE_ON/NORMAL)
   }
   return DeviceHandlerBase::executeAction(actionId, commandedBy, data, size);
 }
@@ -610,11 +602,7 @@ ReturnValue_t ReactionWheelsHandler::getParameter(uint8_t domainId, uint8_t para
 
 // -------- Dataset routing ----------------------------------------------------
 LocalPoolDataSetBase* ReactionWheelsHandler::getDataSetHandle(sid_t sid) {
-  if (sid.ownerSetId == DATASET_ID_HK) {
-    return &hkSet;
-  }
-  if (sid.ownerSetId == DATASET_ID_RAW) {
-    return &replySet;
-  }
+  if (sid.ownerSetId == DATASET_ID_HK)  return &hkSet;
+  if (sid.ownerSetId == DATASET_ID_RAW) return &replySet;
   return DeviceHandlerBase::getDataSetHandle(sid);
 }
