@@ -1,60 +1,58 @@
-#ifndef RW_PROTOCOL_H_
-#define RW_PROTOCOL_H_
-
-#include <cstdint>
+// fsfw/devicehandlers/RwProtocol.h
+#pragma once
 #include <cstddef>
+#include <cstdint>
+
+// Minimal byte-oriented protocol used by ReactionWheelsHandler and Python simulator.
+// Commands and replies are fixed-length frames with CRC16-CCITT (FALSE).
+//
+// Command frame (6 bytes):
+//   [AA, cmdId, p0, p1, crcH, crcL]
+//
+// Status reply frame (9 bytes):
+//   [AB, 0x10, spdH, spdL, torH, torL, running, crcH, crcL]
 
 namespace RwProtocol {
 
-// Wire constants
-constexpr uint8_t START_CMD   = 0xAA;  // Host->RW
-constexpr uint8_t START_REPLY = 0xAB;  // RW->Host
+  // Start bytes
+  static constexpr uint8_t START_CMD   = 0xAA;
+  static constexpr uint8_t START_REPLY = 0xAB;
 
-// Command IDs on wire
-constexpr uint8_t CMD_SET_SPEED  = 0x01;  // payload: int16 rpm
-constexpr uint8_t CMD_STOP       = 0x02;  // payload: none (value=0)
-constexpr uint8_t CMD_STATUS_REQ = 0x03;  // payload: none (value=0)
-constexpr uint8_t CMD_SET_TORQUE = 0x04;  // payload: int16 mNm
+  // Wire lengths
+  static constexpr size_t CMD_LEN    = 6;
+  static constexpr size_t STATUS_LEN = 9;
 
-// Reply IDs on wire
-constexpr uint8_t RESP_STATUS = 0x10;
+  // Command IDs (second byte in command frame)
+  enum class CmdId : uint8_t {
+    SET_SPEED   = 0x01, // payload p0..p1: int16 rpm (big-endian)
+    STOP        = 0x02, // payload p0..p1: 0x0000
+    STATUS_REQ  = 0x03, // payload p0..p1: 0x0000
+    SET_TORQUE  = 0x04  // payload p0..p1: int16 torque_mNm (big-endian)
+  };
 
-// Fixed frame sizes
-constexpr size_t CMD_LEN    = 6;  // [0]=0xAA [1]=cmd [2..3]=val [4..5]=crc16
-constexpr size_t STATUS_LEN = 9;  // [0]=0xAB [1]=0x10 [2..3]=rpm [4..5]=mNm [6]=run [7..8]=crc16
+  // Reply IDs (second byte in reply frame)
+  enum class RespId : uint8_t {
+    STATUS = 0x10 // status reply frame
+  };
 
-static_assert(CMD_LEN == 6, "CMD frame size must be 6 bytes");
-static_assert(STATUS_LEN == 9, "STATUS frame size must be 9 bytes");
+  // Parsed STATUS fields (host endian)
+  struct Status {
+    int16_t speedRpm{0};  // signed RPM
+    int16_t torqueMnM{0}; // signed torque in mNm
+    uint8_t running{0};   // 1 if running, 0 otherwise
+  };
 
-// Parser result codes
-enum class ParseResult : uint8_t {
-  OK = 0,
-  LEN_ERROR,
-  BAD_START,
-  BAD_ID,
-  CRC_ERROR,
-  MALFORMED
-};
+  // --- Builders (return total frame length, or 0 on error) ------------------
+  size_t buildSetSpeed(uint8_t* out, size_t cap, int16_t rpm);  // Build SET_SPEED command
+  size_t buildSetTorque(uint8_t* out, size_t cap, int16_t torque_mNm);  // Build SET_TORQUE command
+  size_t buildStop(uint8_t* out, size_t cap); // Build STOP command
+  size_t buildStatusReq(uint8_t* out, size_t cap);  // Build STATUS request command
 
-// Decoded status struct
-struct Status {
-  int16_t speedRpm = 0;   // signed rpm
-  int16_t torque_mNm = 0; // signed mNm
-  uint8_t running = 0;    // 0/1
-};
+  // --- CRC helpers ----------------------------------------------------------
+  uint16_t calcCrc16(const uint8_t* buf, size_t len); // Calculate CRC16-CCITT (FALSE)
+  bool verifyCrc16(const uint8_t* buf, size_t len); // Verify CRC16-CITT (FALSE)
 
-// Build helpers (return true if out buffer filled with CMD_LEN bytes)
-bool buildSetSpeed(uint8_t* out, size_t outLen, int16_t rpm);
-bool buildSetTorque(uint8_t* out, size_t outLen, int16_t mNm);
-bool buildStop(uint8_t* out, size_t outLen);
-bool buildStatusReq(uint8_t* out, size_t outLen);
+  // --- Parser ---------------------------------------------------------------
+  bool parseStatus(const uint8_t* buf, size_t len, Status& out);  // Parse STATUS reply frame into Status struct.
 
-// Parse status reply (expects STATUS_LEN bytes)
-ParseResult parseStatus(const uint8_t* in, size_t len, Status& out);
-
-// CRC utility (exposed for tests/diagnostics)
-uint16_t crc16CcittFalse(const uint8_t* data, size_t len);
-
-}  // namespace RwProtocol
-
-#endif  // RW_PROTOCOL_H_
+} // namespace RwProtocol

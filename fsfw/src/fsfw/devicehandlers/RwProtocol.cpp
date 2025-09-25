@@ -1,102 +1,97 @@
 #include "RwProtocol.h"
+#include "fsfw/globalfunctions/CRC.h"
+
+namespace {
+
+// Store 16-bit value in big-endian into two byte pointers
+static inline void be_store16(uint8_t* ph, uint8_t* pl, uint16_t v) {
+  *ph = static_cast<uint8_t>((v >> 8) & 0xFF);
+  *pl = static_cast<uint8_t>(v & 0xFF);
+}
+
+}  // namespace
 
 namespace RwProtocol {
 
-// Internal helpers
-namespace {
-inline void be16Store(uint8_t* p, uint16_t v) {
-  p[0] = static_cast<uint8_t>((v >> 8) & 0xFF);
-  p[1] = static_cast<uint8_t>(v & 0xFF);
+// Calculate CRC-16 for a given buffer (no trailing CRC in len) using project CRC
+uint16_t calcCrc16(const uint8_t* buf, size_t len) {
+  if (buf == nullptr) return 0;
+  return CRC::crc16ccitt(buf, static_cast<uint32_t>(len), 0xFFFF);
 }
 
-inline uint16_t be16Load(const uint8_t* p) {
-  return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) | p[1]);
+// Verify buffer ending with 2-byte big-endian CRC
+// Returns true if last two bytes match calcCrc16(buf, len-2)
+bool verifyCrc16(const uint8_t* buf, size_t len) {
+  if (buf == nullptr || len < 2) return false;
+  const uint16_t exp = static_cast<uint16_t>(buf[len - 2] << 8) | buf[len - 1];
+  const uint16_t act = calcCrc16(buf, len - 2);
+  return exp == act;
 }
 
-// CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF, no xorout, no reflection
-uint16_t crc16_impl(const uint8_t* data, size_t len) {
-  uint16_t crc = 0xFFFF;
-  for (size_t i = 0; i < len; ++i) {
-    crc ^= static_cast<uint16_t>(data[i]) << 8;
-    for (int b = 0; b < 8; ++b) {
-      if (crc & 0x8000) {
-        crc = static_cast<uint16_t>((crc << 1) ^ 0x1021);
-      } else {
-        crc <<= 1;
-      }
-    }
-  }
-  return crc;
-}
-
-// Writes CMD frame with given cmd id and 16-bit value
-bool buildCmd(uint8_t* out, size_t outLen, uint8_t cmdId, int16_t value) {
-  if (out == nullptr || outLen < CMD_LEN) {
-    return false;
-  }
+// Build "SET_SPEED" command frame
+// Layout (6 bytes): [START_CMD, id, rpmH, rpmL, crcH, crcL]
+size_t buildSetSpeed(uint8_t* out, size_t cap, int16_t rpm) {
+  if (out == nullptr || cap < CMD_LEN) return 0;
   out[0] = START_CMD;
-  out[1] = cmdId;
-  be16Store(&out[2], static_cast<uint16_t>(value));  // two's complement as-is
+  out[1] = static_cast<uint8_t>(CmdId::SET_SPEED);
+  out[2] = static_cast<uint8_t>((rpm >> 8) & 0xFF);
+  out[3] = static_cast<uint8_t>( rpm       & 0xFF);
+  const uint16_t crc = calcCrc16(out, CMD_LEN - 2);
+  be_store16(&out[4], &out[5], crc);
+  return CMD_LEN;
+}
 
-  const uint16_t crc = crc16_impl(out, 4);          // CRC over bytes 0..3
-  be16Store(&out[4], crc);
+// Build "SET_TORQUE" command frame
+// Layout (6 bytes): [START_CMD, id, tqH, tqL, crcH, crcL]
+// torque_mNm is signed mNm (int16)
+size_t buildSetTorque(uint8_t* out, size_t cap, int16_t torque_mNm) {
+  if (out == nullptr || cap < CMD_LEN) return 0;
+  out[0] = START_CMD;
+  out[1] = static_cast<uint8_t>(CmdId::SET_TORQUE);
+  out[2] = static_cast<uint8_t>((torque_mNm >> 8) & 0xFF);
+  out[3] = static_cast<uint8_t>( torque_mNm       & 0xFF);
+  const uint16_t crc = calcCrc16(out, CMD_LEN - 2);
+  be_store16(&out[4], &out[5], crc);
+  return CMD_LEN;
+}
+
+// Build "STOP" command frame (no payload)
+size_t buildStop(uint8_t* out, size_t cap) {
+  if (out == nullptr || cap < CMD_LEN) return 0;
+  out[0] = START_CMD;
+  out[1] = static_cast<uint8_t>(CmdId::STOP);
+  out[2] = 0x00;
+  out[3] = 0x00;
+  const uint16_t crc = calcCrc16(out, CMD_LEN - 2);
+  be_store16(&out[4], &out[5], crc);
+  return CMD_LEN;
+}
+
+// Build "STATUS_REQ" command frame (no payload)
+size_t buildStatusReq(uint8_t* out, size_t cap) {
+  if (out == nullptr || cap < CMD_LEN) return 0;
+  out[0] = START_CMD;
+  out[1] = static_cast<uint8_t>(CmdId::STATUS_REQ);
+  out[2] = 0x00;
+  out[3] = 0x00;
+  const uint16_t crc = calcCrc16(out, CMD_LEN - 2);
+  be_store16(&out[4], &out[5], crc);
+  return CMD_LEN;
+}
+
+// Parse STATUS reply frame
+// Expected layout (9 bytes): [START_REPLY, RespId::STATUS, spdH, spdL, torH, torL, running, crcH, crcL]
+// Returns true on successful CRC and field extraction
+bool parseStatus(const uint8_t* buf, size_t len, Status& out) {
+  if (buf == nullptr || len < STATUS_LEN) return false;
+  if (buf[0] != START_REPLY) return false;
+  if (buf[1] != static_cast<uint8_t>(RespId::STATUS)) return false;
+  if (!verifyCrc16(buf, STATUS_LEN)) return false;
+
+  out.speedRpm  = static_cast<int16_t>((buf[2] << 8) | buf[3]);
+  out.torqueMnM = static_cast<int16_t>((buf[4] << 8) | buf[5]);
+  out.running   = buf[6];
   return true;
-}
-}  // namespace
-
-// Public CRC function
-uint16_t crc16CcittFalse(const uint8_t* data, size_t len) {
-  if (data == nullptr) {
-    return 0;
-  }
-  return crc16_impl(data, len);
-}
-
-// Builders
-bool buildSetSpeed(uint8_t* out, size_t outLen, int16_t rpm) {
-  return buildCmd(out, outLen, CMD_SET_SPEED, rpm);
-}
-
-bool buildSetTorque(uint8_t* out, size_t outLen, int16_t mNm) {
-  return buildCmd(out, outLen, CMD_SET_TORQUE, mNm);
-}
-
-bool buildStop(uint8_t* out, size_t outLen) {
-  return buildCmd(out, outLen, CMD_STOP, 0);
-}
-
-bool buildStatusReq(uint8_t* out, size_t outLen) {
-  return buildCmd(out, outLen, CMD_STATUS_REQ, 0);
-}
-
-// Parser
-ParseResult parseStatus(const uint8_t* in, size_t len, Status& out) {
-  // Basic checks
-  if (in == nullptr || len != STATUS_LEN) {
-    return ParseResult::LEN_ERROR;
-  }
-  if (in[0] != START_REPLY) {
-    return ParseResult::BAD_START;
-  }
-  if (in[1] != RESP_STATUS) {
-    return ParseResult::BAD_ID;
-  }
-
-  // CRC over bytes 0..6, compare with [7..8]
-  const uint16_t crcCalc = crc16_impl(in, 7);
-  const uint16_t crcWire = be16Load(&in[7]);
-  if (crcCalc != crcWire) {
-    return ParseResult::CRC_ERROR;
-  }
-
-  // Extract fields
-  out.speedRpm   = static_cast<int16_t>(be16Load(&in[2]));
-  out.torque_mNm = static_cast<int16_t>(be16Load(&in[4]));
-  out.running    = in[6];
-
-  // Basic sanity (optional, keep minimal here)
-  // running is 0/1 by convention, do not hard-fail for other values
-  return ParseResult::OK;
 }
 
 }  // namespace RwProtocol

@@ -1,21 +1,25 @@
-// ReactionWheelsHandler.cpp
+// ReactionWheelsHandler.cpp – device handler for reaction wheels (English comments, ASCII only)
 
 #include "ReactionWheelsHandler.h"
 
+#include <cmath>
 #include <cstring>
 #include <iomanip>
 #include <vector>
 
 #include "RwEvents.h"
 #include "RwProtocol.h"
-
+#include "fsfw/action/ActionHelper.h"
 #include "fsfw/devicehandlers/DeviceHandlerIF.h"
 #include "fsfw/ipc/MessageQueueIF.h"
-#include "fsfw/objectmanager/SystemObject.h"
-#include "fsfw/serviceinterface/ServiceInterface.h"
+#include "fsfw/ipc/MutexIF.h"
+#include "fsfw/parameters/ParameterMessage.h"
+#include "fsfw/returnvalues/returnvalue.h"
+#include "fsfw/serviceinterface/ServiceInterfaceStream.h"
 #include "fsfw/timemanager/Clock.h"
+#include "fsfw/datapoollocal/ProvidesDataPoolSubscriptionIF.h"
 
-// --- small helper for debug hex dumps ---
+// Debug hex dump helper
 #if RW_VERBOSE
 static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
 #if FSFW_CPP_OSTREAM_ENABLED == 1
@@ -25,58 +29,127 @@ static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
   }
   sif::warning << std::dec << std::endl;
 #else
-  (void)tag;
-  (void)p;
-  (void)n;
+  (void)tag; (void)p; (void)n;
 #endif
 }
+#else
+static inline void dumpHexWarn(const char*, const uint8_t*, size_t) {}
 #endif
 
-// -----------------------------------------------------------------------------
-// ctor
+// ctor – set up RX ring and base class
 ReactionWheelsHandler::ReactionWheelsHandler(object_id_t objectId, object_id_t comIF,
                                              CookieIF* cookie)
     : DeviceHandlerBase(objectId, comIF, cookie) {
-  // optional receive-sizes FIFO for shared ringbuffer (diagnostic use)
   rxRing.setToUseReceiveSizeFIFO(/*fifoDepth*/ 8);
   (void)rxRing.initialize();
 }
 
-// -----------------------------------------------------------------------------
-// mode hooks
+// mode hooks – start up into NORMAL
 void ReactionWheelsHandler::doStartUp() {
   sif::info << "ReactionWheelsHandler: doStartUp()" << std::endl;
   setMode(MODE_NORMAL);
 }
 
+// mode hooks – shut down to OFF
 void ReactionWheelsHandler::doShutDown() {
   sif::info << "ReactionWheelsHandler: doShutDown()" << std::endl;
   setMode(MODE_OFF);
 }
 
+// called on mode change
 void ReactionWheelsHandler::modeChanged() {
-  Mode_t m{};
-  Submode_t s{};
-  getMode(&m, &s);
-  sif::info << "ReactionWheelsHandler: modeChanged -> " << int(m) << "/" << int(s) << std::endl;
+  Mode_t m{}; Submode_t s{};
+  this->getMode(&m, &s);
+  sif::info << "ReactionWheelsHandler: modeChanged -> " << static_cast<int>(m)
+            << " (sub=" << static_cast<int>(s) << ")" << std::endl;
 }
 
-// -----------------------------------------------------------------------------
-// periodic polling builder
+// subscribe HK after task creation
+ReturnValue_t ReactionWheelsHandler::initializeAfterTaskCreation() {
+  ReturnValue_t rv = DeviceHandlerBase::initializeAfterTaskCreation();
+  if (rv != returnvalue::OK) {
+    return rv;
+  }
+  const sid_t hkSid{getObjectId(), DATASET_ID_HK};
+  subdp::RegularHkPeriodicParams params(hkSid, /*enable*/ true, /*period s*/ RwConfig::HK_PERIOD_S);
+  auto* hkMgr = getHkManagerHandle();
+  if (hkMgr == nullptr) {
+    return returnvalue::FAILED;
+  }
+  return hkMgr->subscribeForRegularPeriodicPacket(params);
+}
+
+// drop up to 3 stale frames from COM IF
+ReturnValue_t ReactionWheelsHandler::drainRxNow() {
+  if (communicationInterface == nullptr || comCookie == nullptr) {
+    return returnvalue::OK;
+  }
+  for (int i = 0; i < 3; ++i) {
+    ReturnValue_t rvReq =
+        communicationInterface->requestReceiveMessage(comCookie, RwProtocol::STATUS_LEN);
+    if (rvReq != returnvalue::OK) break;
+    uint8_t* buf = nullptr;
+    size_t sz = 0;
+    ReturnValue_t rvRead = communicationInterface->readReceivedMessage(comCookie, &buf, &sz);
+    if (rvRead != returnvalue::OK || buf == nullptr || sz == 0) break;
+#if RW_VERBOSE
+    sif::warning << "drainRxNow: dropped " << sz << " stale bytes" << std::endl;
+    dumpHexWarn("drainRxNow: bytes", buf, (sz > 32 ? 32 : sz));
+#endif
+  }
+  return returnvalue::OK;
+}
+
+// pull everything currently available into ring buffer
+ReturnValue_t ReactionWheelsHandler::drainRxIntoRing() {
+  if (communicationInterface == nullptr || comCookie == nullptr) {
+    return returnvalue::OK;
+  }
+  while (true) {
+    (void)rxRing.lockRingBufferMutex(MutexIF::TimeoutType::WAITING, /*timeout ms*/ 2);
+    const size_t freeSpace = rxRing.availableWriteSpace();
+    if (freeSpace == 0) {
+      (void)rxRing.unlockRingBufferMutex();
+      break;
+    }
+    const size_t chunk = (freeSpace < 128) ? freeSpace : size_t(128);
+    ReturnValue_t req = communicationInterface->requestReceiveMessage(comCookie, chunk);
+    if (req != returnvalue::OK) {
+      (void)rxRing.unlockRingBufferMutex();
+      break;
+    }
+    uint8_t* buf = nullptr; size_t sz = 0;
+    ReturnValue_t rd = communicationInterface->readReceivedMessage(comCookie, &buf, &sz);
+    if (rd != returnvalue::OK || buf == nullptr || sz == 0) {
+      (void)rxRing.unlockRingBufferMutex();
+      break;
+    }
+    const size_t wrote = rxRing.writeData(buf, sz);
+    if (wrote != sz) {
+      sif::warning << "RW rxRing overflow: dropped " << (sz - wrote) << " bytes" << std::endl;
+    }
+#if RW_VERBOSE
+    sif::warning << "drainRxIntoRing: wrote " << wrote << " bytes" << std::endl;
+#endif
+    (void)rxRing.unlockRingBufferMutex();
+  }
+  return returnvalue::OK;
+}
+
+// build periodic or TC-driven STATUS polls
 ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t* id) {
-  // 1) If a poll is outstanding, check for timeout
+  // 1) if a STATUS poll is outstanding, do not poll again
   if (statusAwaitCnt >= 0) {
     if (++statusAwaitCnt > STATUS_TIMEOUT_CYCLES) {
-      triggerEvent(RwEvents::TIMEOUT, /*p1*/ 0, /*p2*/ 0);
-      statusAwaitCnt = -1;
-      // continue to normal flow without immediate re-poll to avoid spam
+      triggerEvent(RwEvents::TIMEOUT, 0, 0);
+      statusAwaitCnt = -1; // close poll window on timeout
     } else {
       *id = DeviceHandlerIF::NO_COMMAND_ID;
-      return NOTHING_TO_SEND;
+      return NOTHING_TO_SEND; // keep waiting
     }
   }
 
-  // 2) Inhibit polls right after external command
+  // 2) inhibit polls right after an external command
   uint32_t nowMs = 0;
   Clock::getUptime(&nowMs);
   if (lastExtCmdMs != 0 && (nowMs - lastExtCmdMs) < POLL_INHIBIT_MS) {
@@ -84,38 +157,39 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
     return NOTHING_TO_SEND;
   }
 
-  // 3) TC-driven immediate status poll
+  // 3) TC-triggered immediate poll
   if (pendingTcStatusTm) {
 #if RW_VERBOSE
-    sif::warning << "buildNormalDeviceCommand: TC-driven STATUS poll" << std::endl;
+    sif::warning << "buildNormalDeviceCommand: tcStatusPending=true -> immediate STATUS poll"
+                 << std::endl;
 #endif
     (void)drainRxNow();
-    if (!RwProtocol::buildStatusReq(txBuf, sizeof(txBuf))) {
+    const size_t total = RwProtocol::buildStatusReq(txBuf, sizeof(txBuf));
+    if (total == 0) {
       *id = DeviceHandlerIF::NO_COMMAND_ID;
       return NOTHING_TO_SEND;
     }
-    rawPacket = txBuf;
-    *id = CMD_STATUS_POLL;
+    rawPacket    = txBuf;
+    rawPacketLen = total;
+    *id          = CMD_STATUS_POLL;
     statusAwaitCnt = 0;
-#if RW_VERBOSE
-    dumpHexWarn("DH TX (TC STATUS)", txBuf, RwProtocol::CMD_LEN);
-#endif
+    dumpHexWarn("DH TX (TC-driven STATUS poll)", txBuf, total);
     return returnvalue::OK;
   }
 
-  // 4) Periodic status poll
+  // 4) periodic STATUS poll
   if (++statusPollCnt >= statusPollDivider) {
     statusPollCnt = 0;
-    if (!RwProtocol::buildStatusReq(txBuf, sizeof(txBuf))) {
+    const size_t total = RwProtocol::buildStatusReq(txBuf, sizeof(txBuf));
+    if (total == 0) {
       *id = DeviceHandlerIF::NO_COMMAND_ID;
       return NOTHING_TO_SEND;
     }
-    rawPacket = txBuf;
-    *id = CMD_STATUS_POLL;
+    rawPacket    = txBuf;
+    rawPacketLen = total;
+    *id          = CMD_STATUS_POLL;
     statusAwaitCnt = 0;
-#if RW_VERBOSE
-    dumpHexWarn("DH TX (periodic STATUS)", txBuf, RwProtocol::CMD_LEN);
-#endif
+    dumpHexWarn("DH TX (periodic STATUS poll)", txBuf, total);
     return returnvalue::OK;
   }
 
@@ -123,13 +197,13 @@ ReturnValue_t ReactionWheelsHandler::buildNormalDeviceCommand(DeviceCommandId_t*
   return NOTHING_TO_SEND;
 }
 
-// no transition commands
+// no transition specific commands
 ReturnValue_t ReactionWheelsHandler::buildTransitionDeviceCommand(DeviceCommandId_t* id) {
   *id = DeviceHandlerIF::NO_COMMAND_ID;
   return NOTHING_TO_SEND;
 }
 
-// build outgoing wire command for an external device command
+// build command frames from actions (SET_SPEED, SET_TORQUE, STOP, STATUS)
 ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t deviceCommand,
                                                              const uint8_t* data, size_t len) {
   switch (deviceCommand) {
@@ -139,84 +213,95 @@ ReturnValue_t ReactionWheelsHandler::buildCommandFromCommand(DeviceCommandId_t d
       }
       int16_t rpm = 0;
       std::memcpy(&rpm, data, sizeof(rpm));
-      // clamp against configured max RPM
-      if (p_maxRpm <= 0) {
-        p_maxRpm = RwConfig::MAX_RPM_DEFAULT;
-      }
-      if (rpm > p_maxRpm) rpm = p_maxRpm;
-      if (rpm < -p_maxRpm) rpm = -p_maxRpm;
 
-      if (!RwProtocol::buildSetSpeed(txBuf, sizeof(txBuf), rpm)) {
+      int16_t lim = p_maxRpm;
+      if (lim <= 0) {
+        lim = RwConfig::MAX_RPM_DEFAULT;
+      }
+      if (rpm >  lim) rpm =  lim;
+      if (rpm < -lim) rpm = -lim;
+
+      const size_t total = RwProtocol::buildSetSpeed(txBuf, sizeof(txBuf), rpm);
+      if (total == 0) {
         return returnvalue::FAILED;
       }
       rawPacket = txBuf;
-#if RW_VERBOSE
-      dumpHexWarn("DH TX (SET_SPEED)", txBuf, RwProtocol::CMD_LEN);
-#endif
-      Clock::getUptime(&lastExtCmdMs);  // enable short poll inhibit
+      rawPacketLen = total;
+      dumpHexWarn("DH TX (TC frame: SET_SPEED)", txBuf, total);
+      Clock::getUptime(&lastExtCmdMs);   // short poll inhibit
       return returnvalue::OK;
     }
+
     case CMD_SET_TORQUE: {
       if (len < sizeof(int16_t)) {
         return returnvalue::FAILED;
       }
       int16_t tq = 0;
       std::memcpy(&tq, data, sizeof(tq));
-      if (!RwProtocol::buildSetTorque(txBuf, sizeof(txBuf), tq)) {
+
+      const int16_t lim = RwConfig::MAX_TORQUE_MNM_DEFAULT;
+      if (lim > 0) {
+        if (tq >  lim) tq =  lim;
+        if (tq < -lim) tq = -lim;
+      }
+
+      const size_t total = RwProtocol::buildSetTorque(txBuf, sizeof(txBuf), tq);
+      if (total == 0) {
         return returnvalue::FAILED;
       }
       rawPacket = txBuf;
-#if RW_VERBOSE
-      dumpHexWarn("DH TX (SET_TORQUE)", txBuf, RwProtocol::CMD_LEN);
-#endif
-      Clock::getUptime(&lastExtCmdMs);
+      rawPacketLen = total;
+      dumpHexWarn("DH TX (TC frame: SET_TORQUE)", txBuf, total);
+      Clock::getUptime(&lastExtCmdMs);   // short poll inhibit
       return returnvalue::OK;
     }
+
     case CMD_STOP: {
-      if (!RwProtocol::buildStop(txBuf, sizeof(txBuf))) {
+      const size_t total = RwProtocol::buildStop(txBuf, sizeof(txBuf));
+      if (total == 0) {
         return returnvalue::FAILED;
       }
       rawPacket = txBuf;
-#if RW_VERBOSE
-      dumpHexWarn("DH TX (STOP)", txBuf, RwProtocol::CMD_LEN);
-#endif
-      Clock::getUptime(&lastExtCmdMs);
+      rawPacketLen = total;
+      dumpHexWarn("DH TX (TC frame: STOP)", txBuf, total);
+      Clock::getUptime(&lastExtCmdMs);   // short poll inhibit
       return returnvalue::OK;
     }
+
     case CMD_STATUS: {
-      if (!RwProtocol::buildStatusReq(txBuf, sizeof(txBuf))) {
+      const size_t total = RwProtocol::buildStatusReq(txBuf, sizeof(txBuf));
+      if (total == 0) {
         return returnvalue::FAILED;
       }
       rawPacket = txBuf;
-#if RW_VERBOSE
-      dumpHexWarn("DH TX (STATUS)", txBuf, RwProtocol::CMD_LEN);
-#endif
+      rawPacketLen = total;
+      dumpHexWarn("DH TX (TC frame: STATUS)", txBuf, total);
       return returnvalue::OK;
     }
+
     default:
 #if RW_VERBOSE
-      sif::warning << "ReactionWheelsHandler: unknown deviceCommand 0x" << std::hex << deviceCommand
-                   << std::dec << std::endl;
+      sif::warning << "ReactionWheelsHandler: unknown deviceCommand 0x" << std::hex
+                   << deviceCommand << std::dec << std::endl;
 #endif
       return returnvalue::FAILED;
   }
 }
 
-// map commands and replies
+// map commands and replies for DH base
 void ReactionWheelsHandler::fillCommandAndReplyMap() {
-  insertInCommandMap(CMD_SET_SPEED, false, 0);
-  insertInCommandMap(CMD_SET_TORQUE, false, 0);
-  insertInCommandMap(CMD_STOP, false, 0);
+  insertInCommandMap(CMD_SET_SPEED,   false, 0);
+  insertInCommandMap(CMD_SET_TORQUE,  false, 0);
+  insertInCommandMap(CMD_STOP,        false, 0);
 
-  insertInCommandAndReplyMap(CMD_STATUS_POLL, /*maxDelayMs*/ 5, &replySet,
-                             RwProtocol::STATUS_LEN, /*periodic*/ false,
-                             /*hasDifferentReplyId*/ true, REPLY_STATUS_POLL, nullptr);
+  insertInCommandAndReplyMap(CMD_STATUS_POLL, 5, &replySet, RwProtocol::STATUS_LEN,
+                             /*periodic*/ false, /*hasDifferentReplyId*/ true, REPLY_STATUS_POLL,
+                             /*countdown*/ nullptr);
 
   insertInCommandMap(CMD_STATUS, false, 0);
 }
 
-// -----------------------------------------------------------------------------
-// low-level error counters
+// FDIR counters – CRC errors
 void ReactionWheelsHandler::onCrcError() {
   ++crcErrCnt;
   if (CRC_ERR_EVENT_THRESH != 0 && (crcErrCnt % CRC_ERR_EVENT_THRESH) == 0) {
@@ -224,6 +309,7 @@ void ReactionWheelsHandler::onCrcError() {
   }
 }
 
+// FDIR counters – malformed frames
 void ReactionWheelsHandler::onMalformed() {
   ++malformedCnt;
   if (MALFORMED_EVENT_THRESH != 0 && (malformedCnt % MALFORMED_EVENT_THRESH) == 0) {
@@ -231,102 +317,106 @@ void ReactionWheelsHandler::onMalformed() {
   }
 }
 
-// -----------------------------------------------------------------------------
-// window scanner used by scanForReply
+// scan a sliding window for protocol issues and count them
 void ReactionWheelsHandler::reportProtocolIssuesInWindow(const uint8_t* buf, size_t n) {
-  if (buf == nullptr || n < 2) {
-    return;
-  }
+  if (buf == nullptr || n < 2) return;
   for (size_t i = 0; i + 1 < n; ++i) {
-    if (buf[i] != RwProtocol::START_REPLY) {
-      continue;
-    }
-    const size_t remain = n - i;
-    if (remain < RwProtocol::STATUS_LEN) {
+    if (buf[i] != RwProtocol::START_REPLY) continue;
+    uint8_t id = buf[i + 1];
+
+    if (id != static_cast<uint8_t>(RwProtocol::RespId::STATUS)) {
       onMalformed();
       continue;
     }
-    RwProtocol::Status tmp{};
-    const auto res = RwProtocol::parseStatus(&buf[i], RwProtocol::STATUS_LEN, tmp);
-    if (res == RwProtocol::ParseResult::CRC_ERROR) {
+    if (i + RwProtocol::STATUS_LEN > n) {
+      onMalformed();
+      continue;
+    }
+    if (!RwProtocol::verifyCrc16(&buf[i], RwProtocol::STATUS_LEN)) {
       onCrcError();
-    } else if (res != RwProtocol::ParseResult::OK) {
-      onMalformed();
     }
   }
 }
 
-// -----------------------------------------------------------------------------
-// scanForReply: try to find a valid STATUS frame in current chunk or ring
+// search from tail for the most recent valid STATUS frame
+static inline bool findLatestValidStatus(const uint8_t* buf, size_t n, long& posOut) {
+  if (buf == nullptr || n < RwProtocol::STATUS_LEN) return false;
+  for (long i = static_cast<long>(n) - static_cast<long>(RwProtocol::STATUS_LEN); i >= 0; --i) {
+    const uint8_t* p = &buf[static_cast<size_t>(i)];
+    if (p[0] == RwProtocol::START_REPLY &&
+        p[1] == static_cast<uint8_t>(RwProtocol::RespId::STATUS) &&
+        RwProtocol::verifyCrc16(p, RwProtocol::STATUS_LEN)) {
+      posOut = i;
+      return true;
+    }
+  }
+  return false;
+}
+
+// extract reply either from current packet or from RX ring snapshot
 ReturnValue_t ReactionWheelsHandler::scanForReply(const uint8_t* start, size_t len,
                                                   DeviceCommandId_t* foundId, size_t* foundLen) {
 #if RW_VERBOSE
   sif::warning << "scanForReply: called with len=" << len << std::endl;
 #endif
-  if (foundId == nullptr || foundLen == nullptr) {
+  reportProtocolIssuesInWindow(start, len);
+
+  long pos = -1;
+  if (findLatestValidStatus(start, len, pos)) {
+    const uint8_t* src = start + static_cast<size_t>(pos);
+    std::memcpy(replySet.raw.value, src, RwProtocol::STATUS_LEN);
+    replySet.raw.setValid(true);
+    replySet.setValidity(true, true);
+    *foundId = REPLY_STATUS_POLL;
+    *foundLen = RwProtocol::STATUS_LEN;
+    return returnvalue::OK;
+  }
+
+  (void)drainRxIntoRing();
+
+  (void)rxRing.lockRingBufferMutex(MutexIF::TimeoutType::WAITING, /*timeout ms*/ 2);
+  size_t avail = rxRing.getAvailableReadData();
+  if (avail < RwProtocol::STATUS_LEN) {
+    (void)rxRing.unlockRingBufferMutex();
     return returnvalue::FAILED;
   }
 
-  // 1) scan current chunk
-  reportProtocolIssuesInWindow(start, len);
-  if (start != nullptr && len >= RwProtocol::STATUS_LEN) {
-    for (long i = static_cast<long>(len) - static_cast<long>(RwProtocol::STATUS_LEN); i >= 0;
-         --i) {
-      const uint8_t* p = &start[static_cast<size_t>(i)];
-      if (p[0] != RwProtocol::START_REPLY) {
-        continue;
-      }
-      RwProtocol::Status s{};
-      const auto pr = RwProtocol::parseStatus(p, RwProtocol::STATUS_LEN, s);
-      if (pr == RwProtocol::ParseResult::OK) {
-        std::memcpy(replySet.raw.value, p, RwProtocol::STATUS_LEN);
-        replySet.raw.setValid(true);
-        replySet.setValidity(true, true);
-        *foundId = REPLY_STATUS_POLL;
-        *foundLen = RwProtocol::STATUS_LEN;
-        return returnvalue::OK;
-      }
-    }
+  std::vector<uint8_t> snapshot(avail);
+  size_t copied = 0;
+  if (rxRing.readData(snapshot.data(), avail, /*incrementReadPtr=*/false,
+                      /*readRemaining=*/true, &copied) != returnvalue::OK) {
+    (void)rxRing.unlockRingBufferMutex();
+    return returnvalue::FAILED;
+  }
+  snapshot.resize(copied);
+
+  reportProtocolIssuesInWindow(snapshot.data(), snapshot.size());
+
+  if (!findLatestValidStatus(snapshot.data(), snapshot.size(), pos)) {
+    (void)rxRing.unlockRingBufferMutex();
+    return returnvalue::FAILED;
   }
 
-  // 2) ring snapshot without consuming
-  const size_t avail = rxRing.getAvailableReadData();
-  if (avail > 0) {
-    std::vector<uint8_t> snap(avail);
-    size_t trueAmount = 0;
-    (void)rxRing.readData(snap.data(), avail, /*incrementReadPtr*/ false,
-                          /*readRemaining*/ true, &trueAmount);
+  std::memcpy(replySet.raw.value, snapshot.data() + static_cast<size_t>(pos),
+              RwProtocol::STATUS_LEN);
+  replySet.raw.setValid(true);
+  replySet.setValidity(true, true);
+
 #if RW_VERBOSE
-    dumpHexWarn("scanForReply: ring-snap", snap.data(), (trueAmount > 64 ? 64 : trueAmount));
+  sif::warning << "scanForReply: matched STATUS in ring at off=" << pos << ", deleting "
+               << (pos + static_cast<long>(RwProtocol::STATUS_LEN)) << " bytes from ring"
+               << std::endl;
 #endif
-    if (trueAmount >= RwProtocol::STATUS_LEN) {
-      for (long i = static_cast<long>(trueAmount) - static_cast<long>(RwProtocol::STATUS_LEN);
-           i >= 0; --i) {
-        const uint8_t* p = &snap[static_cast<size_t>(i)];
-        if (p[0] != RwProtocol::START_REPLY) {
-          continue;
-        }
-        RwProtocol::Status s{};
-        const auto pr = RwProtocol::parseStatus(p, RwProtocol::STATUS_LEN, s);
-        if (pr == RwProtocol::ParseResult::OK) {
-          std::memcpy(replySet.raw.value, p, RwProtocol::STATUS_LEN);
-          replySet.raw.setValid(true);
-          replySet.setValidity(true, true);
-          *foundId = REPLY_STATUS_POLL;
-          *foundLen = RwProtocol::STATUS_LEN;
-          return returnvalue::OK;
-        }
-      }
-    }
-  }
+  (void)rxRing.deleteData(static_cast<size_t>(pos) + RwProtocol::STATUS_LEN,
+                          /*deleteRemaining=*/false);
+  (void)rxRing.unlockRingBufferMutex();
 
   *foundId = REPLY_STATUS_POLL;
   *foundLen = RwProtocol::STATUS_LEN;
   return returnvalue::OK;
 }
 
-// -----------------------------------------------------------------------------
-// interpret STATUS frame and update HK
+// parse STATUS reply, update HK, FDIR, and optional TC-driven response
 ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
                                                           const uint8_t* packet) {
   if (id != REPLY_STATUS_POLL) {
@@ -334,49 +424,65 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   }
   statusAwaitCnt = -1;
 
-  // choose source frame: prefer dataset if scanForReply put it there
-  const uint8_t* pkt = (replySet.raw.isValid()) ? replySet.raw.value : packet;
-  if (pkt == nullptr) {
-    return returnvalue::FAILED;
-  }
-
-#if RW_VERBOSE
+  const uint8_t* pkt = replySet.raw.isValid() ? replySet.raw.value : packet;
   dumpHexWarn("interpretDeviceReply: frame", pkt, RwProtocol::STATUS_LEN);
-#endif
 
-  RwProtocol::Status st{};
-  const auto pr = RwProtocol::parseStatus(pkt, RwProtocol::STATUS_LEN, st);
-  if (pr != RwProtocol::ParseResult::OK) {
-    if (pr == RwProtocol::ParseResult::CRC_ERROR) {
-      onCrcError();
-    } else {
-      onMalformed();
-    }
-    return returnvalue::FAILED;
+  // offsets must match protocol
+  const int16_t speed   = static_cast<int16_t>((pkt[2] << 8) | pkt[3]);
+  const int16_t torque  = static_cast<int16_t>((pkt[4] << 8) | pkt[5]);
+  const uint8_t running = pkt[6];
+
+  // throttle status log
+  static uint32_t logCtr = 0;
+#if !defined(RW_STATUS_LOG_EVERY)
+#define RW_STATUS_LOG_EVERY RwConfig::STATUS_LOG_EVERY
+#endif
+  if ((++logCtr % RW_STATUS_LOG_EVERY) == 0) {
+    sif::info << "RW STATUS: speed=" << speed << " RPM, torque=" << torque
+              << " mNm, running=" << int(running) << std::endl;
   }
 
-  // throttled log
-  if (++statusPollCnt % RwConfig::STATUS_LOG_EVERY == 0) {
-#if RW_VERBOSE
-    sif::warning << "RW RX: rpm=" << st.speedRpm << " tq_mNm=" << st.torque_mNm
-                 << " running=" << int(st.running) << std::endl;
-#endif
-  }
-
-  // update HK
+  // update HK dataset
   hkSet.read();
-  hkSet.speedRpm.value = st.speedRpm;
-  hkSet.torque_mNm.value = st.torque_mNm;
-  hkSet.running.value = st.running;
-  hkSet.flags.value = fdirFlags;
-  hkSet.error.value = lastErrorCode;
-  hkSet.crcErrCnt.value = crcErrCnt;
+  hkSet.setValidity(false, true);
+
+  hkSet.speedRpm.value     = speed;
+  hkSet.torque_mNm.value   = torque;
+  hkSet.running.value      = running;
+  hkSet.flags.value        = 0;
+  hkSet.error.value        = 0;
+  hkSet.crcErrCnt.value    = crcErrCnt;
   hkSet.malformedCnt.value = malformedCnt;
 
-  uint32_t nowMs = 0;
-  Clock::getUptime(&nowMs);
-  hkSet.timestampMs.value = nowMs;
+  uint32_t ms = 0;
+  Clock::getUptime(&ms);
+  hkSet.timestampMs.value = ms;
 
+  // simple FDIR flags with debouncing
+  const bool stuckCond = (running == 0) && (std::abs(static_cast<int>(speed)) > STUCK_RPM_THRESH);
+  if (stuckCond) {
+    if (++stuckCnt >= STUCK_DEBOUNCE_FRAMES) {
+      triggerEvent(RwEvents::STUCK, static_cast<uint32_t>(speed),
+                   static_cast<uint32_t>(running));
+      stuckCnt = 0;
+      hkSet.flags.value |= 0x0001;
+    }
+  } else {
+    stuckCnt = 0;
+  }
+
+  const bool torqueHigh = (std::abs(static_cast<int>(torque)) > TORQUE_HIGH_MNM_THRESH);
+  if (torqueHigh) {
+    if (++torqueHighCnt >= TORQUE_DEBOUNCE_FRAMES) {
+      triggerEvent(RwEvents::TORQUE_HIGH, static_cast<uint32_t>(torque), 0);
+      torqueHighCnt = 0;
+      hkSet.flags.value |= 0x0002;
+    }
+  } else {
+    torqueHighCnt = 0;
+  }
+
+  // validate and commit
   hkSet.speedRpm.setValid(true);
   hkSet.torque_mNm.setValid(true);
   hkSet.running.setValid(true);
@@ -388,82 +494,113 @@ ReturnValue_t ReactionWheelsHandler::interpretDeviceReply(DeviceCommandId_t id,
   hkSet.setValidity(true, true);
   hkSet.commit();
 
-  // clear TC-driven flag if set
+  // return data to TC caller if STATUS was TC-driven
   if (pendingTcStatusTm) {
+    if (pendingTcStatusReportedTo != MessageQueueIF::NO_QUEUE) {
+      (void)actionHelper.reportData(pendingTcStatusReportedTo, CMD_STATUS, pkt,
+                                    RwProtocol::STATUS_LEN, /*append*/ false);
+    }
     pendingTcStatusTm = false;
+    pendingTcStatusReportedTo = MessageQueueIF::NO_QUEUE;
   }
+
   return returnvalue::OK;
 }
 
-// -----------------------------------------------------------------------------
-// pull available bytes from COM IF into ring
-ReturnValue_t ReactionWheelsHandler::performOperation(uint8_t opCode) {
-  (void)opCode;
-  uint8_t* buf = nullptr;
-  size_t sz = 0;
+// mode transition delays
+uint32_t ReactionWheelsHandler::getTransitionDelayMs(Mode_t from, Mode_t to) {
+  if (from == MODE_OFF && to == MODE_ON) return RwConfig::DELAY_OFF_TO_ON_MS;
+  if (from == MODE_ON && to == MODE_NORMAL) return RwConfig::DELAY_ON_TO_NORMAL_MS;
+  return 0;
+}
 
-  const ReturnValue_t rvReq =
-      communicationInterface->requestReceiveMessage(comCookie, RwProtocol::STATUS_LEN);
-  if (rvReq != returnvalue::OK) {
-    return returnvalue::OK;
-  }
-  const ReturnValue_t rvRead = communicationInterface->readReceivedMessage(comCookie, &buf, &sz);
-  if (rvRead != returnvalue::OK || buf == nullptr || sz == 0) {
-    return returnvalue::OK;
-  }
-
-#if RW_VERBOSE
-  dumpHexWarn("performOperation: RX", buf, (sz > 64 ? 64 : sz));
-#endif
-
-  const ReturnValue_t rvWr = rxRing.writeData(buf, sz);
-  if (rvWr != returnvalue::OK) {
-    ++rxDropCnt;
-#if RW_VERBOSE
-    sif::warning << "performOperation: rx ring overflow, dropCnt=" << rxDropCnt << std::endl;
-#endif
-  }
+// register local data pool entries
+ReturnValue_t ReactionWheelsHandler::initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
+                                                             LocalDataPoolManager&) {
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::RAW_REPLY),
+                           new PoolEntry<uint8_t>(RwProtocol::STATUS_LEN));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_SPEED_RPM),     new PoolEntry<int16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TORQUE_mNm),    new PoolEntry<int16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_RUNNING),       new PoolEntry<uint8_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_FLAGS),         new PoolEntry<uint16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_ERROR),         new PoolEntry<uint16_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_CRC_ERR_CNT),   new PoolEntry<uint32_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_MALFORMED_CNT), new PoolEntry<uint32_t>(1));
+  localDataPoolMap.emplace(static_cast<lp_id_t>(PoolIds::HK_TIMESTAMP_MS),  new PoolEntry<uint32_t>(1));
   return returnvalue::OK;
 }
 
-// -----------------------------------------------------------------------------
-// drop some stale frames from COM IF (used before forced polls)
-ReturnValue_t ReactionWheelsHandler::drainRxNow() {
-  for (int i = 0; i < 8; ++i) {
-    ReturnValue_t rvReq =
-        communicationInterface->requestReceiveMessage(comCookie, RwProtocol::STATUS_LEN);
-    if (rvReq != returnvalue::OK) break;
-    uint8_t* buf = nullptr;
-    size_t sz = 0;
-    ReturnValue_t rvRead = communicationInterface->readReceivedMessage(comCookie, &buf, &sz);
-    if (rvRead != returnvalue::OK || buf == nullptr || sz == 0) break;
+// action entry point – remember if STATUS was TC-driven so we can echo data
+ReturnValue_t ReactionWheelsHandler::executeAction(ActionId_t actionId,
+                                                   MessageQueueId_t commandedBy,
+                                                   const uint8_t* data, size_t size) {
 #if RW_VERBOSE
-    dumpHexWarn("drainRxNow: drop", buf, (sz > 32 ? 32 : sz));
+  sif::warning << "executeAction: actionId=0x" << std::hex << int(actionId)
+               << " size=" << std::dec << size
+               << " commandedBy=0x" << std::hex << commandedBy << std::dec << std::endl;
 #endif
+  const auto cmd = static_cast<DeviceCommandId_t>(actionId);
+  if (cmd == CMD_STATUS) {
+    pendingTcStatusTm = true;
+    pendingTcStatusReportedTo = commandedBy;
   }
-  return returnvalue::OK;
+  return DeviceHandlerBase::executeAction(actionId, commandedBy, data, size);
 }
 
-// -----------------------------------------------------------------------------
-// parameter interface
+// parameter interface – get/set per-domain params
 ReturnValue_t ReactionWheelsHandler::getParameter(uint8_t domainId, uint8_t parameterId,
                                                   ParameterWrapper* parameterWrapper,
-                                                  const ParameterWrapper* /*newValues*/,
+                                                  const ParameterWrapper* newValues,
                                                   uint16_t /*startAtIndex*/) {
   if (domainId != PARAM_DOMAIN) {
     return returnvalue::FAILED;
   }
   switch (static_cast<ParamId>(parameterId)) {
     case ParamId::MAX_RPM:
-      parameterWrapper->set<int16_t>(p_maxRpm);
+      if (newValues != nullptr) {
+        int16_t v = 0;
+        if (newValues->getElement(&v, 0) != returnvalue::OK) {
+          return returnvalue::FAILED;
+        }
+        p_maxRpm = v;
+      }
+      parameterWrapper->set(p_maxRpm);
       return returnvalue::OK;
+
     case ParamId::MAX_SLEW_RPM_S:
-      parameterWrapper->set<uint16_t>(p_maxSlewRpmS);
+      if (newValues != nullptr) {
+        uint16_t v = 0;
+        if (newValues->getElement(&v, 0) != returnvalue::OK) {
+          return returnvalue::FAILED;
+        }
+        p_maxSlewRpmS = v;
+      }
+      parameterWrapper->set(p_maxSlewRpmS);
       return returnvalue::OK;
+
     case ParamId::POLL_DIVIDER:
-      parameterWrapper->set<uint32_t>(statusPollDivider);
+      if (newValues != nullptr) {
+        uint32_t v = 0;
+        if (newValues->getElement(&v, 0) != returnvalue::OK) {
+          return returnvalue::FAILED;
+        }
+        statusPollDivider = v;
+      }
+      parameterWrapper->set(statusPollDivider);
       return returnvalue::OK;
+
     default:
       return returnvalue::FAILED;
   }
+}
+
+// dataset routing
+LocalPoolDataSetBase* ReactionWheelsHandler::getDataSetHandle(sid_t sid) {
+  if (sid.ownerSetId == DATASET_ID_HK) {
+    return &hkSet;
+  }
+  if (sid.ownerSetId == DATASET_ID_RAW) {
+    return &replySet;
+  }
+  return DeviceHandlerBase::getDataSetHandle(sid);
 }
