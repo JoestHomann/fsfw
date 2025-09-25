@@ -71,6 +71,23 @@ class AcsController : public SystemObject, public ExecutableObjectIF {
   // Build diagnostic snapshot for typed TM
   AcsDiagSnapshot getDiag() const;
 
+  // -------- NEW: Minimal attitude TM view used by PUS 220/133 ----------------
+  // Fixed fields consumed by RwPusService::emitAttYprTm()
+  struct AttTmV1 {
+    float refYawDeg{0.f};    // reference yaw   [deg]
+    float refPitchDeg{0.f};  // reference pitch [deg]
+    float refRollDeg{0.f};   // reference roll  [deg]
+    float trueYawDeg{0.f};   // true yaw        [deg]
+    float truePitchDeg{0.f}; // true pitch      [deg]
+    float trueRollDeg{0.f};  // true roll       [deg]
+    float errAngleDeg{0.f};  // small-angle attitude error magnitude [deg]
+    uint32_t timestampMs{0}; // uptime in ms when snapshot taken
+    uint16_t sample{0};      // rolling sample counter
+  };
+
+  // Fill AttTmV1 with a consistent snapshot (thread-safe enough for TM)
+  void getAttTmV1(AttTmV1& out) const;  // NEW
+
  private:
   // Static config and wiring
   acs::Config cfg_;                           // tuning and limits

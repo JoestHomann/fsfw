@@ -12,6 +12,7 @@
 #include "fsfw/ipc/MessageQueueSenderIF.h"
 #include "fsfw/action/ActionMessage.h"
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
+#include "fsfw/timemanager/Clock.h"  // NEW: for timestamp in AttTmV1
 
 // ACS controller implementation
 // Runs the closed loop each task cycle: read wheel HK, propagate estimator,
@@ -118,8 +119,8 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
 
   // Enabled path: initialize internal states once after enable
   if (!prevEnabled || !gInitStates) {
-    gIstate[0]=gIstate[1]=gIstate[2]=0.f;
-    gOmegaF[0]=gOmegaF[1]=gOmegaF[2]=0.f;
+    gIstate[0] = gIstate[1] = gIstate[2] = 0.f;
+    gOmegaF[0] = gOmegaF[1] = gOmegaF[2] = 0.f;  // erste Messung setzen wir nach estimator_.step()
     gInitStates = true;
   }
   prevEnabled = true;
@@ -316,6 +317,46 @@ AcsDiagSnapshot AcsController::getDiag() const {
 
   s.dtMs = dtMs_;
   return s;
+}
+
+// -------- NEW: Provide a minimal attitude snapshot for TM 220/133 ----------
+void AcsController::getAttTmV1(AttTmV1& out) const {
+  // Fetch reference and true attitude
+  const auto qRef = guidance_.getTargetQuat();
+  const float* qTrue = estimator_.quatTrue();
+
+  // Convert both to YPR in radians
+  float yawR, pitchR, rollR, yawT, pitchT, rollT;
+  quatToYpr(qRef.data(), yawR, pitchR, rollR);
+  quatToYpr(qTrue,       yawT, pitchT, rollT);
+
+  // Compute small-angle error magnitude from vector part of qerr
+  float qc[4];
+  quatConj_(qTrue, qc);
+  float qerr[4];
+  quatMul_(qRef.data(), qc, qerr);
+  if (qerr[0] < 0.0f) for (int i=0;i<4;i++) qerr[i] = -qerr[i]; // shortest path
+
+  const float rad2deg = 180.0f / 3.14159265358979323846f;
+  const float evec[3] = {2.0f*qerr[1], 2.0f*qerr[2], 2.0f*qerr[3]};
+  const float eNorm   = std::sqrt(evec[0]*evec[0] + evec[1]*evec[1] + evec[2]*evec[2]);
+  const float angDeg  = 2.0f * std::asin(std::min(1.0f, 0.5f * eNorm)) * rad2deg;
+
+  // Fill output (degrees)
+  out.refYawDeg   = yawR   * rad2deg;
+  out.refPitchDeg = pitchR * rad2deg;
+  out.refRollDeg  = rollR  * rad2deg;
+
+  out.trueYawDeg   = yawT   * rad2deg;
+  out.truePitchDeg = pitchT * rad2deg;
+  out.trueRollDeg  = rollT  * rad2deg;
+
+  out.errAngleDeg = angDeg;
+
+  // Timestamp and rolling sample counter
+  (void)Clock::getUptime(&out.timestampMs);
+  static uint16_t s = 0;
+  out.sample = s++;
 }
 
 // --- helpers ---

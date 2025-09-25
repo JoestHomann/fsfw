@@ -24,6 +24,12 @@
 //             AppData: ver(1)=1 | oid(4) | speed(i16) | torque(i16) | running(u8)
 //                       | flags(u16) | err(u16) | crcCnt(u32) | malCnt(u32) | tsMs(u32) | sample(u16)
 //   220/132 = TM_ACS_HK_TYPED  (ACS typed HK)
+//   220/133 = TM_ATT_YPR       (Attitude YPR + error angle, v1; fixed 50 bytes)
+//             AppData: ver(1)=1 | oid(4) |
+//                      refYaw(f32) | refPitch(f32) | refRoll(f32) |
+//                      trueYaw(f32)| truePitch(f32)| trueRoll(f32) |
+//                      errAngleDeg(f32) | timestampMs(u32) | sample(u16) |
+//                      padding(11 bytes = 0)
 
 class RwPusService : public CommandingServiceBase {
  public:
@@ -36,6 +42,7 @@ class RwPusService : public CommandingServiceBase {
     SET_MODE         = 10,
     TM_STATUS_TYPED  = 131,
     TM_ACS_HK_TYPED  = 132,
+    TM_ATT_YPR       = 133,   // NEW: typed attitude YPR + error angle
     ACS_SET_ENABLE   = 140,
     ACS_SET_TARGET   = 141
   };
@@ -76,6 +83,9 @@ class RwPusService : public CommandingServiceBase {
 
   // Emit typed ACS HK (220/132) for the given ACS object
   ReturnValue_t emitAcsTypedHk(object_id_t acsObjectId);
+
+  // Emit typed Attitude YPR + error angle (220/133) for the given ACS object
+  ReturnValue_t emitAttYprTm(object_id_t acsObjectId);  // NEW
 
  private:
   // Storage managers (resolved in initialize)

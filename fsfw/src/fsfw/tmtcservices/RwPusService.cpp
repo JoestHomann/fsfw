@@ -278,8 +278,9 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
         return CommandingServiceBase::INVALID_OBJECT;
       }
       acs->enable(enable);
-      // Emit typed HK right away so operator sees the change
+      // Emit typed HK and attitude so operator sees the change
       (void)emitAcsTypedHk(objectId);
+      (void)emitAttYprTm(objectId);  // NEW
       return CommandingServiceBase::EXECUTION_COMPLETE;
     }
 
@@ -301,8 +302,9 @@ ReturnValue_t RwPusService::prepareCommand(CommandMessage* message, uint8_t subs
       }
       acs->setTargetAttitude(std::array<float,4>{q0,q1,q2,q3});
 
-      // Emit typed HK to see the new reference early
+      // Emit typed HK and attitude to see the new reference early
       (void)emitAcsTypedHk(objectId);
+      (void)emitAttYprTm(objectId);  // NEW
 
       return CommandingServiceBase::EXECUTION_COMPLETE;
     }
@@ -388,6 +390,10 @@ ReturnValue_t RwPusService::handleDataReplyAndEmitTm(store_address_t sid, object
       const auto prv = tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_STATUS_TYPED),
                                                 app, off);
       rv = (prv == returnvalue::OK) ? tmHelper.storeAndSendTmPacket() : prv;
+
+      // Also emit the current attitude as typed TM 220/133 (if ACS controller is available)
+      // This keeps ground view in sync with RW status requests.
+      (void)emitAttYprTm(objects::RW_ACS_CTRL);  // NEW (best-effort; ignore error)
     }
   } else {
     rv = returnvalue::FAILED;
@@ -531,6 +537,48 @@ ReturnValue_t RwPusService::emitAcsTypedHk(object_id_t acsObjectId) {
 
   const auto prv = tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_ACS_HK_TYPED),
                                             app, off);
+  if (prv != returnvalue::OK) return prv;
+  return tmHelper.storeAndSendTmPacket();
+}
+
+// Compose and emit typed Attitude YPR + error angle (PUS 220/133), 50-byte fixed AppData
+ReturnValue_t RwPusService::emitAttYprTm(object_id_t acsObjectId) {
+  auto* acs = ObjectManager::instance()->get<AcsController>(acsObjectId);
+  if (acs == nullptr) {
+    return CommandingServiceBase::INVALID_OBJECT;
+  }
+
+  // Pull current snapshot from controller (thread-safe)
+  AcsController::AttTmV1 att{};
+  acs->getAttTmV1(att);
+
+  // AppData layout (big-endian):
+  // ver(1)=1 | oid(4) |
+  // refYaw(f32) | refPitch(f32) | refRoll(f32) |
+  // trueYaw(f32)| truePitch(f32)| trueRoll(f32) |
+  // errAngleDeg(f32) | timestampMs(u32) | sample(u16) | padding(..) to 50B
+  uint8_t app[50] = {};
+  size_t off = 0;
+
+  app[off++] = 1; // version
+  be_store_u32(&app[off], static_cast<uint32_t>(acsObjectId)); off += 4;
+
+  be_store_f32(&app[off], att.refYawDeg);   off += 4;
+  be_store_f32(&app[off], att.refPitchDeg); off += 4;
+  be_store_f32(&app[off], att.refRollDeg);  off += 4;
+
+  be_store_f32(&app[off], att.trueYawDeg);   off += 4;
+  be_store_f32(&app[off], att.truePitchDeg); off += 4;
+  be_store_f32(&app[off], att.trueRollDeg);  off += 4;
+
+  be_store_f32(&app[off], att.errAngleDeg);  off += 4;
+
+  be_store_u32(&app[off], att.timestampMs);  off += 4;
+  be_store_u16(&app[off], att.sample);       off += 2;
+
+  // Remaining bytes (if any) stay zero as padding
+  const auto prv = tmHelper.prepareTmPacket(static_cast<uint8_t>(Subservice::TM_ATT_YPR),
+                                            app, sizeof(app));
   if (prv != returnvalue::OK) return prv;
   return tmHelper.storeAndSendTmPacket();
 }

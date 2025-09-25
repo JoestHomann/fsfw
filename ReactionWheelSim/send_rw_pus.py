@@ -24,10 +24,11 @@ SUB_ACS_SET_TARGET   = 141   # NEW
 # Subservices (TM)
 SUB_TM_STATUS_TYPED  = 131   # typed RW status (v1)
 SUB_TM_ACS_TYPED     = 132   # typed ACS HK (v1)
+SUB_TM_ATT_YPR       = 133   # NEW: typed attitude YPR + error angle (v1)
 
 # Housekeeping Service
-SVC_HK                 = 3
-SUB_HK_REPORT_PERIODIC = 25   # periodic HK report (Svc 3 / Sub 25)
+SVC_HK                  = 3
+SUB_HK_REPORT_PERIODIC  = 25   # periodic HK report (Svc 3 / Sub 25)
 
 # DeviceHandler modes (FSFW default enum values)
 MODE_OFF    = 0
@@ -147,6 +148,40 @@ def handle_tm_acs_typed_132(data: bytes, acs_oid: int):
           f"dt={dt_ms} ms")
     return True
 
+def handle_tm_att_ypr_133(data: bytes, acs_oid: int):
+    """Decode typed attitude YPR TM (220/133, v1).
+       Expected AppData (big-endian), 40 bytes total:
+         OID(4) | ver(1) | enabled(1) |
+         yprRef[3]*f32 (deg) | yprTrue[3]*f32 (deg) |
+         errAngleDeg f32 | dtMs u32 | sample u16
+    """
+    start = data.find(acs_oid.to_bytes(4, "big"), 9)
+    if start == -1 or start + 40 > len(data):
+        return False
+
+    p = data[start:start+40]
+    oid_be   = int.from_bytes(p[0:4], "big")
+    ver      = p[4]
+    enabled  = p[5]
+
+    # helper for f32 BE
+    def f32(i): return struct.unpack(">f", p[i:i+4])[0]
+    off = 6
+    try:
+        ypr_ref  = (f32(off+0),  f32(off+4),  f32(off+8));   off += 12
+        ypr_true = (f32(off+0),  f32(off+4),  f32(off+8));   off += 12
+        err_deg  = f32(off);                                  off += 4
+        dt_ms    = int.from_bytes(p[off:off+4], "big");       off += 4
+        sample   = int.from_bytes(p[off:off+2], "big");       off += 2
+    except struct.error:
+        return False
+
+    print(f"[TM 220/133] v{ver} oid=0x{oid_be:08X} enabled={enabled} "
+          f"ref[YPRdeg]=[{ypr_ref[0]:.2f},{ypr_ref[1]:.2f},{ypr_ref[2]:.2f}] "
+          f"true[YPRdeg]=[{ypr_true[0]:.2f},{ypr_true[1]:.2f},{ypr_true[2]:.2f}] "
+          f"errAngle={err_deg:.2f} deg  dt={dt_ms} ms  sample={sample}")
+    return True
+
 def handle_tm_hk_3_25(data: bytes, expect_oid: int):
     """Decode Periodic HK reports (Service 3 / Sub 25) for the RW handler.
 
@@ -222,9 +257,14 @@ def handle_tm(data: bytes, rw_oid: int, acs_oid: int):
         if handle_tm_acs_typed_132(data, acs_oid):
             return
 
-    # Then typed RW
+    # Then typed RW (status)
     if svc == SERVICE and sub == SUB_TM_STATUS_TYPED:
         if handle_tm_typed_rw_131(data, rw_oid):
+            return
+
+    # NEW: typed ATT YPR
+    if svc == SERVICE and sub == SUB_TM_ATT_YPR:
+        if handle_tm_att_ypr_133(data, acs_oid):
             return
 
     # Periodic HK
@@ -307,7 +347,7 @@ Commands:
   mode <off|on|normal|raw> [sub]   - Send SET_MODE (default sub=0)
 
   acs_enable <0|1>       - Enable(1)/Disable(0) ACS controller (to ACS_OID)
-  att <q0> <q1> <q2> <q3> - Set ACS target attitude (quaternion; auto-normalized)   # NEW
+  att <q0> <q1> <q2> <q3> - Set ACS target attitude (quaternion; auto-normalized)
 
   oid <hex|dec>          - Change RW target object id (default 0x00004402)
   acs_oid <hex|dec>      - Change ACS target object id (default 0x0000AC51)

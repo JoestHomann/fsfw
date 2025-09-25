@@ -34,7 +34,7 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
 
   // ---------------- Parameter service ---------------------------------------
   static constexpr uint8_t PARAM_DOMAIN = 0x42;
-  enum class ParamId : uint8_t { MAX_RPM = 1, MAX_SLEW_RPM_S = 2, POLL_DIVIDER = 3 };
+  enum class ParamId : uint8_t { MAX_RPM = 1, POLL_DIVIDER = 2 };
 
   // ---------------- Local pool layout ---------------------------------------
   enum class PoolIds : lp_id_t {

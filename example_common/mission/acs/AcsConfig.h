@@ -49,7 +49,7 @@ struct Limits {
 
 // Control loop timing
 struct Timing {
-  uint32_t dtMs{200}; // controller step [ms] (5 Hz by default)
+  uint32_t dtMs{200}; // controller step [ms] (5 Hz)
   constexpr float dt() const { return 1e-3f * static_cast<float>(dtMs); } // step [s]
 };
 
