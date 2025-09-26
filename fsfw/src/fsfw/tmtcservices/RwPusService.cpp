@@ -20,9 +20,9 @@
 #include "fsfw/storagemanager/storeAddress.h"
 #include "fsfw/timemanager/Clock.h"
 
-// NEW: read RW HK variables from local data pool
+// Read RW HK variables from local data pool
 #include "fsfw/datapoollocal/LocalPoolVariable.h"
-// NEW: PoolIds definition
+// PoolIds definition
 #include "fsfw/devicehandlers/ReactionWheelsHandler.h"
 
 namespace {
@@ -93,7 +93,7 @@ static void dumpHexWarn(const char* tag, const uint8_t* p, size_t n) {
 static inline void dumpHexWarn(const char*, const uint8_t*, size_t) {}
 #endif
 
-// Human-readable name for command codes in replies (for logs)
+// Command name helper for debug output
 inline const char* cmdName(Command_t c) {
   if (c == ActionMessage::DATA_REPLY || c == DeviceHandlerMessage::REPLY_DIRECT_COMMAND_DATA) {
     return "DATA_REPLY/DH_DIRECT_DATA";
@@ -455,7 +455,7 @@ ReturnValue_t RwPusService::handleReply(const CommandMessage* reply, Command_t, 
   }
 }
 
-// Unrequested replies (e.g. spontaneous STATUS) are treated like data and emitted as TM
+// Unrequested replies (STATUS polls) are treated like data and emitted as TM
 void RwPusService::handleUnrequestedReply(CommandMessage* reply) {
 #if RW_PUS_VERBOSE
   const auto cmd = reply->getCommand();

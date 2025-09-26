@@ -1,16 +1,23 @@
-// fsfw/devicehandlers/RwProtocol.h
 #pragma once
 #include <cstddef>
 #include <cstdint>
 
-// Minimal byte-oriented protocol used by ReactionWheelsHandler and Python simulator.
-// Commands and replies are fixed-length frames with CRC16-CCITT (FALSE).
-//
-// Command frame (6 bytes):
-//   [AA, cmdId, p0, p1, crcH, crcL]
-//
-// Status reply frame (9 bytes):
-//   [AB, 0x10, spdH, spdL, torH, torL, running, crcH, crcL]
+/*
+ * RwProtocol.h - Implementation of Reaction Wheel serial protocol
+ *
+ * Outsourced from ReactionWheelsHandler to allow reuse in other ReactionWheelHandlers
+ * and in the RwPusService.
+ * 
+ * Implements the protocal as follows:
+ * 
+ * Command frame (6 bytes):
+ *  [AA, cmdId, p0, p1, crcH, crcL]
+ *
+ * Status reply frame (9 bytes):
+ *   [AB, 0x10, spdH, spdL, torH, torL, running, crcH, crcL]
+ *
+ *  - Joest Homann
+ */
 
 namespace RwProtocol {
 
@@ -18,7 +25,7 @@ namespace RwProtocol {
   static constexpr uint8_t START_CMD   = 0xAA;
   static constexpr uint8_t START_REPLY = 0xAB;
 
-  // Wire lengths
+  // Message lengths
   static constexpr size_t CMD_LEN    = 6;
   static constexpr size_t STATUS_LEN = 9;
 

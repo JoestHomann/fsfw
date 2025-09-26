@@ -13,10 +13,32 @@
 #include "fsfw/parameters/ParameterWrapper.h"
 #include "fsfw/returnvalues/returnvalue.h"
 
-// ReactionWheelsHandler
-// - Supports torque and speed commands (mNm, RPM).
-// - Periodically polls STATUS frames and publishes HK into local data pool.
-// - Provides TC-driven immediate STATUS polling.
+/*
+ * ReactionWheelsHandler.h - Device handler for Reaction Wheels
+ *
+ *  Reaction Wheels Handler that uses the DeviceHandlerBase. Sends torque/speed
+ *  commands and polls STATUS periodically. Publishes typed HK to the local
+ *  data pool and emits events when triggered.
+ *
+ * Features:
+ *  - Uses RwProtocol to pack/unpack messages (big-endian, CRC-16)
+ *  - Implements DHB state machine: doStartUp()/doShutDown(), 
+ *    buildNormalDeviceCommand(), scanForReply(), interpretDeviceReply(), 
+ *  - Maps replies to LocalDataPoolManager and trigger RwEvent
+ *  - Provide on-demand STATUS via TC
+ *
+ * Notes:
+ *  - Timeouts/thresholds in RwConfig.h
+ *  - Event IDs in RwEvents.h.
+ *  - Uses RwProtocol.h building messages.
+ *  - Commands: SET_MODE (ON/OFF/NORMAL), SET_SPEED [rpm], SET_TORQUE [mNm], REQ_STATUS.
+ *  - HK: speed [rpm], torque [mNm], running [bool], flags [bitfield], error counters.
+ *  - Parameter service: MAX_RPM [rpm], POLL_DIVIDER.
+ *  - Debug via RW_VERBOSE)
+ * 
+ *  - Joest Homann
+ */
+
 
 class ReactionWheelsHandler : public DeviceHandlerBase {
  public:
@@ -48,7 +70,7 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
     HK_TIMESTAMP_MS = 8
   };
 
-  // --------------- HK flag bits --------------------------------
+  // --------------- Housekeeping ------------------------------------------
   static constexpr uint16_t FLAG_STUCK = 0x0001;        // running==0 and |speed| above threshold
   static constexpr uint16_t FLAG_TORQUE_HIGH = 0x0002;  // |torque| above threshold
 
@@ -64,7 +86,7 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
           raw(owner->getObjectId(), static_cast<lp_id_t>(PoolIds::RAW_REPLY), this) {}
   };
 
-  // HK dataset snapshot
+  // HK dataset
   struct RwHkSet : public LocalDataSet {
     LocalPoolVariable<int16_t> speedRpm;
     LocalPoolVariable<int16_t> torque_mNm;
@@ -94,7 +116,7 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   void doShutDown() override;
   void modeChanged() override;
 
-  // ---------------- DeviceHandlerBase hooks ---------------------------------
+  // ---------------- DeviceHandlerBase ---------------------------------
   ReturnValue_t buildNormalDeviceCommand(DeviceCommandId_t* id) override;
   ReturnValue_t buildTransitionDeviceCommand(DeviceCommandId_t* id) override;
 
@@ -108,18 +130,23 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
 
   uint32_t getTransitionDelayMs(Mode_t from, Mode_t to) override;
 
-  ReturnValue_t initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
-                                        LocalDataPoolManager& poolManager) override;
-
   void fillCommandAndReplyMap() override;
 
-  ReturnValue_t initializeAfterTaskCreation() override;
-
+  // ---------------- Local data pool ---------------------------------------
+  ReturnValue_t initializeLocalDataPool(localpool::DataPool& localDataPoolMap,
+                                        LocalDataPoolManager& poolManager) override;
+  
   LocalPoolDataSetBase* getDataSetHandle(sid_t sid) override;
 
+  // ---------------- Initialization --------------------------------------
+  ReturnValue_t initializeAfterTaskCreation() override;
+
+  
+  // ---------------- Action framework ------------------------------------------
   ReturnValue_t executeAction(ActionId_t actionId, MessageQueueId_t commandedBy,
                               const uint8_t* data, size_t size) override;
-
+  
+  // ---------------- Parameter service -------------------------------------
   ReturnValue_t getParameter(uint8_t domainId, uint8_t parameterId,
                              ParameterWrapper* parameterWrapper, const ParameterWrapper* newValues,
                              uint16_t startAtIndex) override;
@@ -156,7 +183,7 @@ class ReactionWheelsHandler : public DeviceHandlerBase {
   // ---------------- RX helpers ----------------------------------------------
   ReturnValue_t drainRxNow();
   ReturnValue_t drainRxIntoRing();
-  void reportProtocolIssuesInWindow(const uint8_t* buf, size_t n);
+  void checkRxWindowForProtocolIssues(const uint8_t* buf, size_t n);
 
   // ---------------- Error handling ------------------------------------------
   void handleCrcError();

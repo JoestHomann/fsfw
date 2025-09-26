@@ -3,8 +3,16 @@
 
 #include "RwConfig.h"
 
-// Reaction Wheel event definitions
-// Provides event IDs used by the RW device handler and services.
+/*
+ * RwEvents.h - Event definitions for ReactionWheelsHandler
+ *
+ * Provides event IDs used by the RW device handler and services.
+ * Outsourced from ReactionWheelsHandler to allow reuse in other RW handlers and services.
+ * Catalogue of Events that the Event Manager can handle for the Reaction Wheel subsystem.
+ * Based on Bätz Diss., p. 135–136
+ * 
+ * - Joest Homann
+ */
 
 class RwEvents {
  public:

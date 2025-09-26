@@ -72,7 +72,7 @@ class RwPusService : public CommandingServiceBase {
   ReturnValue_t emitRwTypedFromHk(object_id_t rwObjectId);
 
   // Helper: check if new data is available (age < maxAgeMs)
-  bool isRwHkFresh_(object_id_t rwOid, uint32_t maxAgeMs = 100) const;
+  bool isRwHkFresh_(object_id_t rwOid, uint32_t maxAgeMs = 400) const;
 
   // Storage managers
   StorageManagerIF* ipcStore = nullptr;

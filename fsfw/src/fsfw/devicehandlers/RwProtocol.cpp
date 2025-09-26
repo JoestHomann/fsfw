@@ -1,6 +1,18 @@
 #include "RwProtocol.h"
 #include "fsfw/globalfunctions/CRC.h"
 
+/*
+ * RwProtocol.cpp - Implementation of Reaction Wheel serial protocol
+
+ * Outsourced from ReactionWheelsHandler to allow reuse in other ReactionWheelHandlers
+ * and in the RwPusService. Uses CRC implementation from fsfw/globalfunctions/CRC.h
+ *
+ * Idea based on Lecture 4 "Timing and Device Handling Code", slide 82ff (Command and Reply
+ * Helper)
+ *
+ *  - Joest Homann
+ */
+
 namespace {
 
 // Store 16-bit value in big-endian into two byte pointers
@@ -41,7 +53,7 @@ size_t buildSetSpeed(uint8_t* out, size_t cap, int16_t rpm) {
   return CMD_LEN;
 }
 
-// Build "SET_TORQUE" command frame
+// Build "SET_TORQUE" command frame 
 // Layout (6 bytes): [START_CMD, id, tqH, tqL, crcH, crcL]
 // torque_mNm is signed mNm (int16)
 size_t buildSetTorque(uint8_t* out, size_t cap, int16_t torque_mNm) {
