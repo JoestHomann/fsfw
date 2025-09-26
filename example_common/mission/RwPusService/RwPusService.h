@@ -108,9 +108,11 @@ class RwPusService : public CommandingServiceBase {
   // Last addressed object id (fallback when no mapping exists)
   object_id_t lastTargetObjectId_{objects::NO_OBJECT};
 
-  // -------- Lightweight periodic state --------------------------------------
-  object_id_t rwPollOid_{objects::RW_HANDLER};   // RW to report data from
-  object_id_t acsPollOid_{objects::RW_ACS_CTRL}; // ACS to report data from
+  // -------- Object IDs for polling -------------------------------------------
+  object_id_t rwPollOid_{objects::RW_HANDLER};   // RW to poll data from
+  object_id_t acsPollOid_{objects::RW_ACS_CTRL}; // ACS to poll data from
+
+  // -------- Polling Parameters -----------------------------------------------
   uint32_t    serviceTick_{0};                   // Counter for TM periodicity
   uint16_t    rwSample_{0};                      // RW typed TM sample counter
   uint16_t    attSample_{0};                     // Attitude typed TM sample counter

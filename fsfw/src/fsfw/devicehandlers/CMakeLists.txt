@@ -8,7 +8,4 @@ target_sources(
           DeviceHandlerMessage.cpp
           DeviceTmReportingWrapper.cpp
           HealthDevice.cpp
-          # NEW:
-          ReactionWheelsHandler.cpp
-          RwProtocol.cpp
           )

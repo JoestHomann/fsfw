@@ -4,7 +4,7 @@
 #include <cstring>
 #include <iomanip>
 
-#include "fsfw/devicehandlers/RwProtocol.h" 
+#include "RwHandler/RwProtocol.h" 
 #include "example_common/mission/acs/AcsController.h"
 #include "commonObjects.h"
 #include "fsfw/action/ActionMessage.h"
@@ -19,7 +19,7 @@
 #include "fsfw/storagemanager/storeAddress.h"
 #include "fsfw/timemanager/Clock.h"
 #include "fsfw/datapoollocal/LocalPoolVariable.h"
-#include "fsfw/devicehandlers/ReactionWheelsHandler.h"
+#include "RwHandler/ReactionWheelsHandler.h"
 
 /*
  * RwPusService.cpp - PUS service for Reaction Wheels and ACS

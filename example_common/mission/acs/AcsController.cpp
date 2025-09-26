@@ -7,7 +7,7 @@
 
 #include "fsfw/datapoollocal/LocalPoolVariable.h"
 #include "commonObjects.h"
-#include "fsfw/devicehandlers/ReactionWheelsHandler.h"
+#include "RwHandler/ReactionWheelsHandler.h"
 #include "fsfw/ipc/CommandMessage.h"
 #include "fsfw/ipc/MessageQueueSenderIF.h"
 #include "fsfw/action/ActionMessage.h"

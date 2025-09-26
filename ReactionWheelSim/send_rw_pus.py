@@ -8,7 +8,7 @@ UDP_HOST = "127.0.0.1"
 UDP_PORT = 7301
 
 # --------- PUS / CCSDS basics ----------
-APID    = 0x00EF           # must match your RwPusService APID
+APID    = 0x00EF           # must match RwPusService APID
 SRC_ID  = 0x0001
 SERVICE = 220              # RwPusService
 
@@ -19,12 +19,12 @@ SUB_STATUS           = 3
 SUB_SET_TORQUE       = 4
 SUB_SET_MODE         = 10
 SUB_ACS_SET_ENABLE   = 140
-SUB_ACS_SET_TARGET   = 141   # NEW
+SUB_ACS_SET_TARGET   = 141   
 
 # Subservices (TM)
 SUB_TM_STATUS_TYPED  = 131   # typed RW status (v1)
 SUB_TM_ACS_TYPED     = 132   # typed ACS HK (v1)
-SUB_TM_ATT_YPR       = 133   # NEW: typed attitude YPR + error angle (v1)
+SUB_TM_ATT_YPR       = 133   # typed attitude YPR + error angle (v1)
 
 # Housekeeping Service
 SVC_HK                  = 3
@@ -151,17 +151,18 @@ def handle_tm_acs_typed_132(data: bytes, acs_oid: int):
 def handle_tm_att_ypr_133(data: bytes, acs_oid: int):
     """Decode typed attitude YPR TM (220/133, v1).
        Expected AppData (big-endian), 40 bytes total:
-         OID(4) | ver(1) | enabled(1) |
+         ver(1) | OID(4) | enabled(1) |
          yprRef[3]*f32 (deg) | yprTrue[3]*f32 (deg) |
          errAngleDeg f32 | dtMs u32 | sample u16
     """
-    start = data.find(acs_oid.to_bytes(4, "big"), 9)
+    marker = bytes([1]) + acs_oid.to_bytes(4, "big")  # ver=1 + OID
+    start = data.find(marker, 9)
     if start == -1 or start + 40 > len(data):
         return False
 
     p = data[start:start+40]
-    oid_be   = int.from_bytes(p[0:4], "big")
-    ver      = p[4]
+    ver      = p[0]
+    oid_be   = int.from_bytes(p[1:5], "big")
     enabled  = p[5]
 
     # helper for f32 BE
@@ -172,14 +173,14 @@ def handle_tm_att_ypr_133(data: bytes, acs_oid: int):
         ypr_true = (f32(off+0),  f32(off+4),  f32(off+8));   off += 12
         err_deg  = f32(off);                                  off += 4
         dt_ms    = int.from_bytes(p[off:off+4], "big");       off += 4
-        #sample   = int.from_bytes(p[off:off+2], "big");       off += 2
+        sample   = int.from_bytes(p[off:off+2], "big");       off += 2
     except struct.error:
         return False
 
     print(f"[TM 220/133] v{ver} oid=0x{oid_be:08X} enabled={enabled} "
           f"ref[YPRdeg]=[{ypr_ref[0]:.2f},{ypr_ref[1]:.2f},{ypr_ref[2]:.2f}] "
           f"true[YPRdeg]=[{ypr_true[0]:.2f},{ypr_true[1]:.2f},{ypr_true[2]:.2f}] "
-          f"errAngle={err_deg:.2f} deg  dt={dt_ms} ms") #sample={sample}
+          f"errAngle={err_deg:.2f} deg  dt={dt_ms} ms sample={sample}") 
     return True
 
 def handle_tm(data: bytes, rw_oid: int, acs_oid: int):
@@ -420,7 +421,7 @@ def main():
                 acs_set_enable(sock, oids['acs'], en, next(seq))
 
             elif cmd in ("att", "acs_att", "attitude"):
-                # att q0 q1 q2 q3  (float32 BE, auto-normalized)
+                # att q0 q1 q2 q3 
                 if len(parts) != 5:
                     print("usage: att <q0> <q1> <q2> <q3>")
                     continue

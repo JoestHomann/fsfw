@@ -1,20 +1,19 @@
 #include "ReactionWheelsHandler.h"
 
-//#include <cmath>
-//#include <cstring>
-//#include <vector>
+#include <cmath>
+#include <cstring>
+#include <vector>
 
 #include "RwEvents.h"
-//#include "RwProtocol.h"
-//#include "fsfw/action/ActionHelper.h"
-//#include "fsfw/datapoollocal/ProvidesDataPoolSubscriptionIF.h"
-//#include "fsfw/devicehandlers/DeviceHandlerIF.h"
-//#include "fsfw/ipc/MessageQueueIF.h"
-//#include "fsfw/ipc/MutexIF.h"
-//#include "fsfw/parameters/ParameterMessage.h"
-//#include "fsfw/returnvalues/returnvalue.h"
-//#include "fsfw/serviceinterface/ServiceInterfaceStream.h"
-//#include "fsfw/timemanager/Clock.h"
+#include "RwProtocol.h"
+#include "fsfw/action/ActionHelper.h"
+#include "fsfw/datapoollocal/ProvidesDataPoolSubscriptionIF.h"
+#include "fsfw/devicehandlers/DeviceHandlerIF.h"
+#include "fsfw/ipc/MessageQueueIF.h"
+#include "fsfw/ipc/MutexIF.h"
+#include "fsfw/parameters/ParameterMessage.h"
+#include "fsfw/returnvalues/returnvalue.h"
+#include "fsfw/timemanager/Clock.h"
 
 
 /*
