@@ -1,8 +1,14 @@
-// example_common/mission/acs/Guidance.h
 #pragma once
+
 #include <array>
 
-// Guidance module: holds target attitude and optional rate feed-forward
+/*
+ * Guidance.h - Attitude Guidance
+ *
+ *  Holds/updates the attitude reference quaternion for the ACS and
+ *  provides a rate reference in BODY frame.
+ *
+ */
 
 class Guidance {
  public:
@@ -13,10 +19,6 @@ class Guidance {
 
   // Read back current target quaternion (unit length)
   const std::array<float,4>& getTargetQuat() const { return qRef_; }
-
-  // Advance guidance by one control step
-  // For hold attitude mode this is not used, can be extended
-  void update(float dt);
 
   // Provide rate command in BODY frame [rad/s]
   void getRateCmd(float outWcmd[3]) const;

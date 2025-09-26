@@ -2,17 +2,22 @@
 #include <array>
 #include "AcsConfig.h"
 
-// Estimator: propagates true attitude/rate and synthesizes gyro measurements
-// - State: q_true (unit quaternion), omega_true (rad/s), gyro bias (rad/s)
-// - Input: wheel torques [mNm] and optional external torque [mNm]
-// - Output: omega_meas (for controller) and q_true / omega_true (for HK)
+
+/*
+ * Estimator.h - ACS state and sensor imitation
+ *
+ *  Propagates the true rigid-body attitude/rates and calculates "gyro" measurements
+ *  for the controller. Consumes wheel torques (and optional external torque),
+ *  integrates dynamics/kinematics, adds bias + band-limited white noise.
+ *
+*/
 
 class Estimator {
  public:
   // Construct with static config (timing, inertia, gyro noise, axes, limits)
   explicit Estimator(const acs::Config& cfg);
 
-  // Set RW axes matrix B (3x4, column-major). Overrides cfg.Bcols if needed.
+  // Set RW axes matrix B (3x4, column-major)
   void setAxes(const acs::Axes3x4& Bcols);
 
   // Run one propagation step
@@ -35,7 +40,7 @@ class Estimator {
  private:
   // Copy of static configuration (timing, inertia, noise, etc.)
   acs::Config  cfg_{};
-  // RW axes matrix (3x4, column-major b1|b2|b3|b4)
+  // RW axes matrix
   acs::Axes3x4 B_{};
 
   // True attitude quaternion (w,x,y,z), unit length

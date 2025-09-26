@@ -1,20 +1,20 @@
 #include "ReactionWheelsHandler.h"
 
-#include <cmath>
-#include <cstring>
-#include <vector>
+//#include <cmath>
+//#include <cstring>
+//#include <vector>
 
 #include "RwEvents.h"
-#include "RwProtocol.h"
-#include "fsfw/action/ActionHelper.h"
-#include "fsfw/datapoollocal/ProvidesDataPoolSubscriptionIF.h"
-#include "fsfw/devicehandlers/DeviceHandlerIF.h"
-#include "fsfw/ipc/MessageQueueIF.h"
-#include "fsfw/ipc/MutexIF.h"
-#include "fsfw/parameters/ParameterMessage.h"
-#include "fsfw/returnvalues/returnvalue.h"
-#include "fsfw/serviceinterface/ServiceInterfaceStream.h"
-#include "fsfw/timemanager/Clock.h"
+//#include "RwProtocol.h"
+//#include "fsfw/action/ActionHelper.h"
+//#include "fsfw/datapoollocal/ProvidesDataPoolSubscriptionIF.h"
+//#include "fsfw/devicehandlers/DeviceHandlerIF.h"
+//#include "fsfw/ipc/MessageQueueIF.h"
+//#include "fsfw/ipc/MutexIF.h"
+//#include "fsfw/parameters/ParameterMessage.h"
+//#include "fsfw/returnvalues/returnvalue.h"
+//#include "fsfw/serviceinterface/ServiceInterfaceStream.h"
+//#include "fsfw/timemanager/Clock.h"
 
 
 /*
@@ -22,7 +22,7 @@
  *
  *  Reaction Wheels Handler that uses the DeviceHandlerBase. Sends torque/speed
  *  commands and polls STATUS periodically. Publishes typed HK to the local
- *  data pool and emits events when triggered.
+ *  data pool and outputs events when triggered (Events defined in RwEvents.h).
  *
  * Features:
  *  - Uses RwProtocol to pack/unpack messages (big-endian, CRC-16)

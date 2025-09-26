@@ -1,16 +1,14 @@
 #pragma once
-#include <fsfw/events/Event.h>
 
+#include "fsfw/events/Event.h"
 #include "RwConfig.h"
 
 /*
  * RwEvents.h - Event definitions for ReactionWheelsHandler
  *
- * Provides event IDs used by the RW device handler and services.
- * Outsourced from ReactionWheelsHandler to allow reuse in other RW handlers and services.
- * Catalogue of Events that the Event Manager can handle for the Reaction Wheel subsystem.
- * Based on Bätz Diss., p. 135–136
- * 
+ * Provides event IDs used by the RW device handler. Outsourced from ReactionWheelsHandler to allow
+ * reuse in other RW handlers. Catalogue of Events that the ReactionWheelsHandler.
+ *
  * - Joest Homann
  */
 

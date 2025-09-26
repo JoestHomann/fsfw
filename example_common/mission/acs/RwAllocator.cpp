@@ -3,21 +3,23 @@
 #include <algorithm>
 #include <cmath>
 
-// Reaction-wheel torque allocator
-// Maps desired body torque [mNm] to per-wheel torques [mNm] using a min-norm
-// pseudo-inverse: tau_w = B^T (B B^T)^-1 (-tau_des).
-// B is 3x4 with columns = unit wheel axes in body frame.
+/*
+ * RwAllocator.h - Reaction-Wheel Torque Allocator
+ *
+ *   Maps calculated body torque to per-wheel torques using 
+ *   the reaction-wheel axes matrix.
+ *
+ */
 
-// Uncomment to route all torque to wheel 1 only (x-axis) for single-wheel bring-up.
-// #define ACS_ALLOC_SINGLE_AXIS_DEBUG 1
+
 
 RwAllocator::RwAllocator(const acs::Config& cfg) : cfg_(cfg), B_(cfg.Bcols) {}
 
 void RwAllocator::setAxes(const acs::Axes3x4& Bcols) { B_ = Bcols; }
 
 void RwAllocator::solve(const float tauDes[3], float tauWheel[4]) const {
-#ifdef ACS_ALLOC_SINGLE_AXIS_DEBUG
-  // Debug path: map body X torque to wheel 1 directly; others off.
+#if ACS_ALLOC_SINGLE_AXIS_DEBUG
+  // Debug path: Map body X torque to wheel 1 directly; others off.
   // Wheel torque acts opposite on body torque by convention.
   tauWheel[0] = -tauDes[0];
   tauWheel[1] = 0.0f;

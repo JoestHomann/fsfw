@@ -7,9 +7,6 @@
  * Outsourced from ReactionWheelsHandler to allow reuse in other ReactionWheelHandlers
  * and in the RwPusService. Uses CRC implementation from fsfw/globalfunctions/CRC.h
  *
- * Idea based on Lecture 4 "Timing and Device Handling Code", slide 82ff (Command and Reply
- * Helper)
- *
  *  - Joest Homann
  */
 

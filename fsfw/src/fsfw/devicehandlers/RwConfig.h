@@ -1,6 +1,14 @@
-// RwConfig.h
 #pragma once
 #include <cstdint>
+
+/*
+ * RwConfig.h - Configuration for Reaction Wheels Handler
+ *
+ * Configuration parameters for the Reaction Wheels Handler. Used by the
+ * ReactionWheelsHandler.
+ *
+ *  - Joest Homann
+ */
 
 namespace RwConfig {
 
@@ -47,11 +55,6 @@ constexpr uint32_t MALFORMED_EVENT_THRESH = 10;
 // Note: Actual TM emission rate also depends on global HK distributor settings.
 constexpr float HK_PERIOD_S =
     10.0f;  // HK_Period = PST_Period * nonDiagIntervalFactor * HK_PERIOD_S = 0.1 * 5 * N
-
-// ----- Typed TM (PUS 220) versions -----------------------------------------
-// Keep small version integers to allow forward-compatible parsing on ground.
-constexpr uint8_t RW_TYPED_TM_VERSION = 1;   // for RW typed TM (subservice 131)
-constexpr uint8_t ACS_TYPED_TM_VERSION = 1;  // for ACS diagnostics typed TM (subservice 132)
 
 // ----- PUS 220 subservice numbers ------------------------------------------
 // These values are used by the PUS service implementation and ground tools.

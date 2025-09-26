@@ -3,9 +3,19 @@
 #include <cmath>
 #include <cstdint>
 
+
+/*
+ * Estimator.cpp - ACS state and sensor imitation
+ *
+ *  Propagates the true rigid-body attitude/rates and calculates "gyro" measurements
+ *  for the controller. Consumes wheel torques (and optional external torque),
+ *  integrates dynamics/kinematics, adds bias + band-limited white noise.
+ *
+*/
+
 namespace { constexpr float PI_F = 3.14159265358979323846f; }
 
-// Constructor: copy static config, set B matrix, initialize states
+// Constructor: Copy static config, set B matrix, initialize states
 Estimator::Estimator(const acs::Config& cfg)
     : cfg_(cfg),
       B_(cfg.Bcols),
@@ -15,7 +25,7 @@ Estimator::Estimator(const acs::Config& cfg)
       blwn_{0,0,0},         // band-limited noise state [rad/s]
       omegaMeas_{0,0,0} {}  // synthesized gyro measurement [rad/s]
 
-// Update RW axes matrix (3x4, column-major b1|b2|b3|b4)
+// Set RW configuration to the defined configuration in AcsConfig.h
 void Estimator::setAxes(const acs::Axes3x4& Bcols) { B_ = Bcols; }
 
 // Run one propagation step

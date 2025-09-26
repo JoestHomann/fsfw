@@ -12,23 +12,38 @@
 #include "fsfw/ipc/MessageQueueSenderIF.h"
 #include "fsfw/action/ActionMessage.h"
 #include "fsfw/serviceinterface/ServiceInterfaceStream.h"
-#include "fsfw/timemanager/Clock.h"  // NEW: for timestamp in AttitudeTM
+#include "fsfw/timemanager/Clock.h" 
 
-// ACS controller implementation
-// Runs the closed loop each task cycle: read wheel HK, propagate estimator,
-// compute torque via cascaded Att-P -> Rate-PI with anti-windup, allocate
-// to wheels, send torque commands. Designed to be readable and robust.
+/*
+ * AcsController.h – Attitude Control System (ACS)
+ *
+ * AcsController computes body torque commands from attitude/rate errors and maps
+ * them to reaction wheels. Implements a cascaded P/PI controller with anti-windup.
+ *
+ * Features:
+ *  - Takes attitude target from Guidance and gyro input from Estimator to calculate body
+ *    torque commands:
+ *      - Outer loop: Attitude-P -> rate reference (per axis)
+ *      - Inner loop: Rate-PI with anti-windup (back-calculation) and rate low-pass
+ *  - Allocation: Body torque -> RW torques using Axes3x4 and wheelMask
+ *  - Limits: Rate/torque clamps, deadband, saturation handling
+ *
+ * Notes:
+ *  - Tuning and limits in AcsConfig.h
+ *  - Interfaces with RW DeviceHandlers via FSFW message queues
+ *
+ */
 
 namespace {
 constexpr float PI_F = 3.14159265358979323846f;
 
-// Last-sent int16 torques per wheel (anti-spam / hysteresis)
+// Last-sent int16 torques per wheel (anti-spam)
 int16_t gLastSentInt16[4] = {0, 0, 0, 0};
 
-// Persistent controller state (single instance)
+// Initialisation of controller state
 float gIstate[3]  = {0.f, 0.f, 0.f}; // PI integrator state [mNm]
 float gOmegaF[3]  = {0.f, 0.f, 0.f}; // LPF body rates [rad/s]
-bool  gInitStates = false;           // one-time init guard
+bool  gInitStates = false;           // One-time init guard
 
 // Convert quaternion to yaw(Z), pitch(Y), roll(X) in radians
 static inline void quatToYpr(const float q[4], float& yaw, float& pitch, float& roll) {
@@ -120,12 +135,12 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
   // Enabled path: initialize internal states once after enable
   if (!prevEnabled || !gInitStates) {
     gIstate[0] = gIstate[1] = gIstate[2] = 0.f;
-    gOmegaF[0] = gOmegaF[1] = gOmegaF[2] = 0.f;  // erste Messung setzen wir nach estimator_.step()
+    gOmegaF[0] = gOmegaF[1] = gOmegaF[2] = 0.f;
     gInitStates = true;
   }
   prevEnabled = true;
 
-  // 1) Read measured wheel torques [mNm] from handlers for estimator input
+  // Read measured wheel torques [mNm] from handlers for estimator input
   std::array<float, 4> tauW_meas = {0, 0, 0, 0};
   for (int i = 0; i < 4; ++i) {
     const object_id_t wid = rwIds_[i];
@@ -139,7 +154,7 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
     }
   }
 
-  // 2) Estimator step: propagate true state and produce measured omega
+  // Estimator step: Propagate true state and produce measured omega
   estimator_.step(tauW_meas, /*tauExt_mNm=*/std::array<float,3>{0.f,0.f,0.f});
   const float* wMeas = estimator_.omegaMeas(); // [rad/s] to controller
   const float* qTrue = estimator_.quatTrue();  // true attitude for logging
@@ -149,12 +164,8 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
     gOmegaF[0]=wMeas[0]; gOmegaF[1]=wMeas[1]; gOmegaF[2]=wMeas[2];
   }
 
-  // 3) Guidance: get rate feed-forward (currently zeros)
-  guidance_.update(dt);
-  float wCmdFeed[3] = {0.0f, 0.0f, 0.0f};
-  guidance_.getRateCmd(wCmdFeed);
 
-  // 4) Compute attitude error quaternion: qerr = qRef * conj(qTrue)
+  // Compute attitude error quaternion: qerr = qRef * conj(qTrue)
   auto qRef = guidance_.getTargetQuat();
   float qc[4];
   quatConj_(qTrue, qc);
@@ -187,18 +198,18 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
               << std::endl;
   }
 
-  // 5) Outer loop: attitude P -> rate reference (per-axis clamp)
+  // Outer loop: attitude P -> rate reference (per-axis clamp)
   const float e[3] = {2.0f*qerr[1], 2.0f*qerr[2], 2.0f*qerr[3]};  // small-angle vector error
   float wRef[3] = {
-      cfg_.ctrl.outer.kAttX * e[0] + wCmdFeed[0],
-      cfg_.ctrl.outer.kAttY * e[1] + wCmdFeed[1],
-      cfg_.ctrl.outer.kAttZ * e[2] + wCmdFeed[2]
+      cfg_.ctrl.outer.kAttX * e[0],
+      cfg_.ctrl.outer.kAttY * e[1],
+      cfg_.ctrl.outer.kAttZ * e[2]
   };
   wRef[0] = std::clamp(wRef[0], -cfg_.ctrl.outer.wRefMaxX, cfg_.ctrl.outer.wRefMaxX);
   wRef[1] = std::clamp(wRef[1], -cfg_.ctrl.outer.wRefMaxY, cfg_.ctrl.outer.wRefMaxY);
   wRef[2] = std::clamp(wRef[2], -cfg_.ctrl.outer.wRefMaxZ, cfg_.ctrl.outer.wRefMaxZ);
 
-  // 6) Low-pass filter on measured omega (optional)
+  // Low-pass filter on measured omega
   if (cfg_.ctrl.inner.omegaLpFcHz > 0.f) {
     const float alpha = 1.0f - std::exp(-2.0f * PI_F * cfg_.ctrl.inner.omegaLpFcHz * dt);
     gOmegaF[0] = gOmegaF[0] + alpha * (wMeas[0] - gOmegaF[0]);
@@ -208,7 +219,7 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
     gOmegaF[0]=wMeas[0]; gOmegaF[1]=wMeas[1]; gOmegaF[2]=wMeas[2];
   }
 
-  // 7) Inner loop: per-axis PI with anti-windup back-calculation
+  // Inner loop: per-axis PI with anti-windup back-calculation
   const float er[3] = { wRef[0]-gOmegaF[0], wRef[1]-gOmegaF[1], wRef[2]-gOmegaF[2] };
 
   // Unsaturated PI output
@@ -232,7 +243,7 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
   // Pre-rate-limit desired torque
   float tauDes_pre[3] = {tauClamped[0], tauClamped[1], tauClamped[2]};
 
-  // 8) Per-axis torque rate limit and final clamp
+  // Per-axis torque rate limit and final clamp
   float tauDes[3] = {tauDes_pre[0], tauDes_pre[1], tauDes_pre[2]};
   const float prev[3] = {tauDes_[0], tauDes_[1], tauDes_[2]};
   rateLimit3_(tauDes, prev, cfg_.limits.torqueRateLimit_mNm_per_s, dt);
@@ -258,7 +269,7 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
   }
 #endif
 
-  // 9) Allocation: body torque -> per-wheel torques [mNm]
+  // Allocation: body torque -> per-wheel torques [mNm]
   float tauW[4] = {0,0,0,0};
   allocator_.solve(tauDes, tauW);
 
@@ -281,7 +292,7 @@ ReturnValue_t AcsController::performOperation(uint8_t) {
     tauWheelCmd_ = {tauW[0], tauW[1], tauW[2], tauW[3]};
   }
 
-  // 10) Send wheel torques with deadband and hysteresis to reduce bus traffic
+  // Send wheel torques with deadband and hysteresis to reduce bus traffic
   sendWheelTorques_(tauWheelCmd_);
 
   return returnvalue::OK;
@@ -319,7 +330,7 @@ AcsDiagSnapshot AcsController::getDiag() const {
   return s;
 }
 
-// -------- NEW: Provide a minimal attitude snapshot for TM 220/133 ----------
+// -------- Attitude snapshot for TM 220/133 ----------
 void AcsController::getAttitudeTM(AttitudeTM& out) const {
   // Fetch reference and true attitude
   const auto qRef = guidance_.getTargetQuat();
@@ -337,7 +348,8 @@ void AcsController::getAttitudeTM(AttitudeTM& out) const {
   quatMul_(qRef.data(), qc, qerr);
   if (qerr[0] < 0.0f) for (int i=0;i<4;i++) qerr[i] = -qerr[i]; // shortest path
 
-  const float rad2deg = 180.0f / 3.14159265358979323846f;
+
+  const float rad2deg = 180.0f / PI_F;
   const float evec[3] = {2.0f*qerr[1], 2.0f*qerr[2], 2.0f*qerr[3]};
   const float eNorm   = std::sqrt(evec[0]*evec[0] + evec[1]*evec[1] + evec[2]*evec[2]);
   const float angDeg  = 2.0f * std::asin(std::min(1.0f, 0.5f * eNorm)) * rad2deg;
@@ -401,7 +413,7 @@ void AcsController::sendWheelTorques_(const std::array<float, 4>& tauWheel_mNm) 
     float tq = std::clamp(tauWheel_mNm[i], -cfg_.limits.torqueMax_mNm, cfg_.limits.torqueMax_mNm);
 
     // Deadband: if tiny torque and last sent was non-zero, send one-time zero
-    if (std::fabs(tq) < cfg_.hygiene.minCmdAbs_mNm) {
+    if (std::fabs(tq) < cfg_.deadband.minCmdAbs_mNm) {
       if (gLastSentInt16[i] != 0) {
         store_address_t storeId{};
         const uint8_t payloadZero[2] = {0, 0}; // big-endian int16(0)

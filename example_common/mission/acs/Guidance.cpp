@@ -1,6 +1,14 @@
 #include "Guidance.h"
 #include <cmath>
 
+/*
+ * Guidance.cpp - Attitude Guidance
+ *
+ *  Holds/updates the attitude reference quaternion for the ACS and
+ *  provides a rate reference in BODY frame.
+ *
+ */
+
 // Constructor: default initialization (identity target)
 Guidance::Guidance() = default;
 
@@ -8,12 +16,6 @@ Guidance::Guidance() = default;
 void Guidance::setTargetQuat(const std::array<float,4>& q_ref) {
   qRef_ = q_ref;
   normalize_(qRef_);
-}
-
-// Advance guidance by one control step
-// Hold-attitude mode: no operation
-void Guidance::update(float /*dt*/) {
-  // Nothing to do for fixed target attitude
 }
 
 // Provide rate command in BODY frame [rad/s]
@@ -24,7 +26,7 @@ void Guidance::getRateCmd(float outWcmd[3]) const {
   outWcmd[2] = 0.0f;
 }
 
-// Normalize quaternion in place; fallback to identity if norm is tiny
+// Normalize quaternion in place - fallback to identity if 0-length
 void Guidance::normalize_(std::array<float,4>& q) {
   float n = std::sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
   if (n > 1e-12f) {
