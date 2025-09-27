@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import socket, struct, itertools, time, threading, math
+import socket, struct, itertools, threading, math
 
 # --------- Transport to FSFW UDP bridge (hosted example) ----------
 UDP_HOST = "127.0.0.1"
@@ -19,7 +19,7 @@ SUB_STATUS           = 3
 SUB_SET_TORQUE       = 4
 SUB_SET_MODE         = 10
 SUB_ACS_SET_ENABLE   = 140
-SUB_ACS_SET_TARGET   = 141   
+SUB_ACS_SET_TARGET   = 141
 
 # Subservices (TM)
 SUB_TM_STATUS_TYPED  = 131   # typed RW status (v1)
@@ -34,7 +34,6 @@ SUB_HK_REPORT_PERIODIC  = 25   # periodic HK report (Svc 3 / Sub 25)
 MODE_OFF    = 0
 MODE_ON     = 1
 MODE_NORMAL = 2
-MODE_RAW    = 3
 
 # Default destination objects
 RW_HANDLER_OID = 0x00004402
@@ -180,7 +179,7 @@ def handle_tm_att_ypr_133(data: bytes, acs_oid: int):
     print(f"[TM 220/133] v{ver} oid=0x{oid_be:08X} enabled={enabled} "
           f"ref[YPRdeg]=[{ypr_ref[0]:.2f},{ypr_ref[1]:.2f},{ypr_ref[2]:.2f}] "
           f"true[YPRdeg]=[{ypr_true[0]:.2f},{ypr_true[1]:.2f},{ypr_true[2]:.2f}] "
-          f"errAngle={err_deg:.2f} deg  dt={dt_ms} ms sample={sample}") 
+          f"errAngle={err_deg:.2f} deg  dt={dt_ms} ms sample={sample}")
     return True
 
 def handle_tm(data: bytes, rw_oid: int, acs_oid: int):
@@ -272,31 +271,10 @@ def acs_set_target(sock, acs_oid_u32, q, seq):
     send_tc(sock, pkt)
 
 # ---------- CLI ----------
-HELP = """\
-Commands:
-  speed <rpm>            - Send SET_SPEED with signed RPM (e.g. speed 1000)
-  torque <mNm>           - Send SET_TORQUE with signed mNm (e.g. torque 150)
-  status                 - Send STATUS request
-  stop                   - Send STOP
-  mode <off|on|normal|raw> [sub]   - Send SET_MODE (default sub=0)
-
-  acs_enable <0|1>       - Enable(1)/Disable(0) ACS controller (to ACS_OID)
-  att <q0> <q1> <q2> <q3> - Set ACS target attitude (quaternion; auto-normalized)
-
-  oid <hex|dec>          - Change RW target object id (default 0x00004402)
-  acs_oid <hex|dec>      - Change ACS target object id (default 0x0000AC51)
-
-  listen [seconds]       - Sleep while background TM prints (default 5s)
-  who                    - Show current settings
-  help                   - Show this help
-  exit/quit              - Leave
-"""
-
 MODE_NAMES = {
     "off": MODE_OFF,
     "on": MODE_ON,
     "normal": MODE_NORMAL,
-    "raw": MODE_RAW,
 }
 
 def parse_int(s: str) -> int:
@@ -306,7 +284,7 @@ def parse_int(s: str) -> int:
     return int(s, 10)
 
 def main():
-    print("Interactive PUS-220 sender for RW/ACS. Background listener is ON. Type 'help' for commands.")
+    print("Interactive PUS-220 sender for RW/ACS. Commands: speed, torque, status, stop, mode, acs_enable, att. Type 'exit' to quit.")
     oids = {"rw": RW_HANDLER_OID, "acs": ACS_CTRL_OID}
     seq = itertools.count()
     sock = make_socket()  # one socket for TX+RX
@@ -336,34 +314,6 @@ def main():
 
             if cmd in ("exit", "quit"):
                 break
-
-            elif cmd == "help":
-                print(HELP)
-
-            elif cmd == "who":
-                print(f"UDP={UDP_HOST}:{UDP_PORT}  APID=0x{APID:03X}  "
-                      f"RW_OID=0x{oids['rw']:08X}  ACS_OID=0x{oids['acs']:08X}  "
-                      f"rxTimeout={SOCKET_TIMEOUT_S}s")
-
-            elif cmd == "oid":
-                if len(parts) < 2:
-                    print("usage: oid <hex|dec>")
-                    continue
-                try:
-                    oids["rw"] = parse_int(parts[1])
-                    print(f"RW_OID set to 0x{oids['rw']:08X}")
-                except ValueError:
-                    print("Invalid OID")
-
-            elif cmd == "acs_oid":
-                if len(parts) < 2:
-                    print("usage: acs_oid <hex|dec>")
-                    continue
-                try:
-                    oids["acs"] = parse_int(parts[1])
-                    print(f"ACS_OID set to 0x{oids['acs']:08X}")
-                except ValueError:
-                    print("Invalid OID")
 
             elif cmd == "speed":
                 if len(parts) < 2:
@@ -397,11 +347,11 @@ def main():
 
             elif cmd == "mode":
                 if len(parts) < 2:
-                    print("usage: mode <off|on|normal|raw> [submode]")
+                    print("usage: mode <off|on|normal> [submode]")
                     continue
                 name = parts[1].lower()
                 if name not in MODE_NAMES:
-                    print("Unknown mode. Use: off, on, normal, raw")
+                    print("Unknown mode. Use: off, on, normal")
                     continue
                 try:
                     sub = parse_int(parts[2]) if len(parts) >= 3 else 0
@@ -421,7 +371,7 @@ def main():
                 acs_set_enable(sock, oids['acs'], en, next(seq))
 
             elif cmd in ("att", "acs_att", "attitude"):
-                # att q0 q1 q2 q3 
+                # att q0 q1 q2 q3
                 if len(parts) != 5:
                     print("usage: att <q0> <q1> <q2> <q3>")
                     continue
@@ -435,13 +385,8 @@ def main():
                 print(f"Sending ACS_SET_TARGET q={qn} to ACS 0x{oids['acs']:08X}")
                 acs_set_target(sock, oids['acs'], qn, next(seq))
 
-            elif cmd == "listen":
-                secs = float(parts[1]) if len(parts) >= 2 else 5.0
-                print(f"Listening for TM for {secs:.1f}s (background RX keeps printing)...")
-                time.sleep(secs)
-
             else:
-                print("Unknown command. Type 'help'.")
+                print("Unknown command.")
 
     finally:
         stop_event.set()
