@@ -25,7 +25,7 @@ To run the software successfully, your **ArchLinux WSL** should have installed t
  - nano
  -  zsh
 
-For "Quality-of-Life" it is recommend to have also installed usbutils for debugging the connection of the Arduino to the WSL.
+For "Quality-of-Life" it is recommended to have also installed usbutils for debugging the connection of the Arduino to the WSL.
 
 To properly connect the Arduino to the WSL, **usbipd** needs to be installed. We use this software in a script (USBtoWSL.ps1) to automate the connecting process. Within the script the BUSID 1-6 is set as the Arduino's BUSID. Check via usbipd, if this is correct for your system as well, then run the script while the WSL is running and the Arduino is connected to your system. The Arduino will then automatically connect to your WSL.
 
