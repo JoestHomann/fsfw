@@ -2,7 +2,7 @@
 
 # ReactionWheelsHandler Documentation
 
-This documention gives a short overview over the ReactionWheelsHandler - a reaction wheels device handler within the Flight Software Framework. Firstly, it is described how the ReactionWheelsHandler was developed. In other words, what hardware and software was used - so the overall environment.
+This documention gives a short overview over the ReactionWheelsHandler - a reaction wheels device handler within the Flight Software Framework.
 
 ## Development Environment
 The development environment covers soft- and hardware that was used in the development process of the ReactionWheelsDeviceHandler.
