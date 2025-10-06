@@ -75,6 +75,7 @@ The ACS is not part of the assignment, and therefore is - as already mentioned -
 
 ## Data flow
 A simplified data flow of the communication between the ground commander via PUS-220 TC and the FSFW is shown below. It focuses on only showing the data flow to and from the ReactionWheelSim on the Arduino.
+
 <img width="1447" height="530" alt="image" src="https://github.com/user-attachments/assets/34734b74-60b3-4dea-8092-f63cc0c252e3" />
 
 
